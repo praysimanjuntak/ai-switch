@@ -1,0 +1,27 @@
+.DS_Store
+.build/
+.swiftpm/
+xcuserdata/
+DerivedData/
+*.xcodeproj/project.xcworkspace/xcuserdata/
+*.xcuserstate
+
+# Release binaries belong in GitHub Releases, not source history.
+dist/
+*.dmg
+*.zip
+
+# Local accounts, credentials, signing keys, and environment overrides.
+.env
+.env.*
+!.env.example
+auth.json
+profiles.json
+*.keychain
+*.keychain-db
+*.p12
+*.pfx
+*.pem
+*.key
+*.mobileprovision
+*.provisionprofile
