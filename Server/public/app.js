@@ -45,7 +45,12 @@
     try {
       const response = await fetch("/api/view", { headers: { Authorization: `Bearer ${token}` }, cache: "no-store" });
       if (response.status === 401) {
+        // Stale cards would look like current data; show only the pairing prompt.
         localStorage.removeItem(TOKEN_KEY);
+        localStorage.removeItem(CACHE_KEY);
+        view = null;
+        el.accounts.replaceChildren();
+        el.unpair.classList.add("hidden");
         showError("This phone's pairing was revoked. Scan a new QR code from AI Switch on your Mac.");
         el.pair.classList.remove("hidden");
         return;
