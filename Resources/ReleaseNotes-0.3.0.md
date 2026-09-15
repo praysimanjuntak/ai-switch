@@ -19,6 +19,7 @@
 ## Usage on your phone
 
 - New **Phone** toolbar button connects this Mac to a self-hosted sync server (`Server/`, Bun + SQLite, deploy with `Scripts/deploy-server.sh`) and shows a QR code that pairs a phone with a read-only web app.
+- Claude's per-model weekly buckets (for example the Fable limit) appear as extra meters on the Mac, in the menu bar, and on the phone.
 - The server reads usage straight from the providers with each account's short-lived access token, so the phone stays accurate while the Mac is off and when the accounts are used elsewhere. Refresh tokens never leave the Mac.
 - The web app installs from Chrome on Android, caches the last usage for offline viewing, and keeps reset countdowns running locally.
 

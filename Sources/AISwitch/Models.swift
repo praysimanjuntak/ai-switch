@@ -30,11 +30,36 @@ struct UsageWindow: Codable, Equatable, Sendable {
     }
 }
 
+/// A weekly limit that applies to one model or surface, e.g. Claude's "Fable" bucket.
+struct ScopedUsageWindow: Codable, Equatable, Sendable {
+    var name: String
+    var window: UsageWindow
+}
+
 struct UsageSnapshot: Codable, Equatable, Sendable {
     var session: UsageWindow?
     var weekly: UsageWindow?
+    var scoped: [ScopedUsageWindow]
     var fetchedAt: Date
     var note: String?
+
+    init(session: UsageWindow?, weekly: UsageWindow?, scoped: [ScopedUsageWindow] = [], fetchedAt: Date, note: String?) {
+        self.session = session
+        self.weekly = weekly
+        self.scoped = scoped
+        self.fetchedAt = fetchedAt
+        self.note = note
+    }
+
+    // Snapshots saved before 0.3 have no `scoped` key.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        session = try container.decodeIfPresent(UsageWindow.self, forKey: .session)
+        weekly = try container.decodeIfPresent(UsageWindow.self, forKey: .weekly)
+        scoped = try container.decodeIfPresent([ScopedUsageWindow].self, forKey: .scoped) ?? []
+        fetchedAt = try container.decode(Date.self, forKey: .fetchedAt)
+        note = try container.decodeIfPresent(String.self, forKey: .note)
+    }
 
     static let empty = UsageSnapshot(
         session: nil,

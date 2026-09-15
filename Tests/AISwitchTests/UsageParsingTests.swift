@@ -50,18 +50,40 @@ func exhaustedCodexLimitKeepsReset() {
     #expect(snapshot.session?.resetsAt == Date(timeIntervalSince1970: 1_800_000_055))
 }
 
-@Test("Claude response values remain percentages used")
-func parsesClaudeWindows() {
-    let snapshot = UsageService.parseClaudeUsage(
-        fiveHourUsed: 12.5,
-        fiveHourReset: "2026-09-04T16:00:00.000000+00:00",
-        sevenDayUsed: 51,
-        sevenDayReset: "2026-09-06T07:00:00.154362+00:00",
-        now: Date(timeIntervalSince1970: 1)
-    )
+@Test("Claude account-wide windows and per-model weekly buckets are parsed from the usage response")
+func parsesClaudeWindows() throws {
+    let payload = try #require(JSONSerialization.jsonObject(with: Data(#"""
+    {"five_hour":{"utilization":12.5,"resets_at":"2026-09-04T16:00:00.000000+00:00","locked_reason":null},
+     "seven_day":{"utilization":51,"resets_at":"2026-09-06T07:00:00.154362+00:00"},
+     "seven_day_opus":null,
+     "limits":[
+       {"kind":"session","group":"session","percent":12,"resets_at":"2026-09-04T16:00:00.000000+00:00","scope":null},
+       {"kind":"weekly_all","group":"weekly","percent":51,"resets_at":"2026-09-06T07:00:00.154362+00:00","scope":null},
+       {"kind":"weekly_scoped","group":"weekly","percent":8,"resets_at":"2026-09-06T07:00:00.726981+00:00","scope":{"model":{"id":null,"display_name":"Fable"},"surface":null}}
+     ]}
+    """#.utf8)) as? [String: Any])
+    let snapshot = UsageService.parseClaudeUsage(payload, now: Date(timeIntervalSince1970: 1))
     #expect(snapshot.session?.remainingPercent == 87.5)
     #expect(snapshot.weekly?.remainingPercent == 49)
     #expect(snapshot.weekly?.resetsAt != nil)
+    #expect(snapshot.scoped.map(\.name) == ["Fable"])
+    #expect(snapshot.scoped.first?.window.usedPercent == 8)
+    let scopedReset = try #require(snapshot.scoped.first?.window.resetsAt)
+    #expect(abs(scopedReset.timeIntervalSince(ISO8601DateFormatter().date(from: "2026-09-06T07:00:00Z")!)) < 1)
+
+    let bare = UsageService.parseClaudeUsage(["five_hour": ["utilization": 3]], now: Date(timeIntervalSince1970: 1))
+    #expect(bare.scoped.isEmpty)
+    #expect(bare.weekly == nil)
+}
+
+@Test("Usage snapshots saved before per-model buckets existed still decode")
+func legacySnapshotDecodes() throws {
+    let decoder = JSONDecoder()
+    decoder.dateDecodingStrategy = .iso8601
+    let legacy = Data(#"{"session":{"usedPercent":12},"fetchedAt":"2026-09-01T00:00:00Z"}"#.utf8)
+    let snapshot = try decoder.decode(UsageSnapshot.self, from: legacy)
+    #expect(snapshot.session?.usedPercent == 12)
+    #expect(snapshot.scoped.isEmpty)
 }
 
 @Test("Claude Keychain service names match Claude Code's per-config-directory scheme")

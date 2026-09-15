@@ -1,26 +1,6 @@
 import Foundation
 
 enum UsageService {
-    private struct ClaudeLimit: Decodable {
-        let utilization: Double?
-        let resetsAt: String?
-
-        enum CodingKeys: String, CodingKey {
-            case utilization
-            case resetsAt = "resets_at"
-        }
-    }
-
-    private struct ClaudeUsageResponse: Decodable {
-        let fiveHour: ClaudeLimit?
-        let sevenDay: ClaudeLimit?
-
-        enum CodingKeys: String, CodingKey {
-            case fiveHour = "five_hour"
-            case sevenDay = "seven_day"
-        }
-    }
-
     static func inspect(_ profile: AccountProfile) async throws -> ProviderInspection {
         switch profile.provider {
         case .codex:
@@ -144,30 +124,34 @@ enum UsageService {
             let code = (response as? HTTPURLResponse)?.statusCode ?? -1
             throw AISwitchError.invalidResponse("Claude usage refresh failed (HTTP \(code)). Re-authenticate this profile if its login expired.")
         }
-        let payload = try JSONDecoder().decode(ClaudeUsageResponse.self, from: data)
-        return parseClaudeUsage(
-            fiveHourUsed: payload.fiveHour?.utilization,
-            fiveHourReset: payload.fiveHour?.resetsAt,
-            sevenDayUsed: payload.sevenDay?.utilization,
-            sevenDayReset: payload.sevenDay?.resetsAt,
-            now: now
-        )
+        guard let payload = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw AISwitchError.invalidResponse("Claude returned an unreadable usage response.")
+        }
+        return parseClaudeUsage(payload, now: now)
     }
 
-    static func parseClaudeUsage(
-        fiveHourUsed: Double?,
-        fiveHourReset: String?,
-        sevenDayUsed: Double?,
-        sevenDayReset: String?,
-        now: Date = Date()
-    ) -> UsageSnapshot {
-        let session = fiveHourUsed.map {
-            UsageWindow(usedPercent: $0, resetsAt: parseISO8601(fiveHourReset))
+    /// `five_hour` and `seven_day` are the account-wide windows. `limits[]` adds
+    /// per-model weekly buckets (`kind: "weekly_scoped"`, e.g. "Fable").
+    static func parseClaudeUsage(_ payload: [String: Any], now: Date = Date()) -> UsageSnapshot {
+        func window(_ raw: Any?, usedKey: String) -> UsageWindow? {
+            guard let limit = raw as? [String: Any], let used = number(limit[usedKey]) else { return nil }
+            return UsageWindow(usedPercent: used, resetsAt: parseISO8601(limit["resets_at"] as? String))
         }
-        let weekly = sevenDayUsed.map {
-            UsageWindow(usedPercent: $0, resetsAt: parseISO8601(sevenDayReset))
+        let scoped = ((payload["limits"] as? [[String: Any]]) ?? []).compactMap { limit -> ScopedUsageWindow? in
+            guard limit["kind"] as? String == "weekly_scoped",
+                  let window = window(limit, usedKey: "percent") else { return nil }
+            let scope = limit["scope"] as? [String: Any]
+            let model = (scope?["model"] as? [String: Any])?["display_name"] as? String
+            let surface = (scope?["surface"] as? [String: Any])?["display_name"] as? String
+            return ScopedUsageWindow(name: model ?? surface ?? "Scoped", window: window)
         }
-        return UsageSnapshot(session: session, weekly: weekly, fetchedAt: now, note: nil)
+        return UsageSnapshot(
+            session: window(payload["five_hour"], usedKey: "utilization"),
+            weekly: window(payload["seven_day"], usedKey: "utilization"),
+            scoped: scoped,
+            fetchedAt: now,
+            note: nil
+        )
     }
 
     private static func parseISO8601(_ value: String?) -> Date? {

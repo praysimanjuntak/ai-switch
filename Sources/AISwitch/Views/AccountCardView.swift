@@ -24,13 +24,19 @@ struct AccountCardView: View {
                            accent: profile.provider.accent, isStale: profile.authIssue != nil)
                 UsageMeter(title: "Weekly", window: profile.usage?.weekly,
                            accent: profile.provider.accent, isStale: profile.authIssue != nil)
+                ForEach(profile.usage?.scoped ?? [], id: \.name) { scoped in
+                    UsageMeter(title: "Weekly · \(scoped.name)", window: scoped.window,
+                               accent: profile.provider.accent, isStale: profile.authIssue != nil)
+                }
             }
             Spacer(minLength: 0)
             footer
         }
         .padding(16)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .frame(height: 216)
+        // Cards stretch to their grid row, so a card with an extra per-model
+        // meter does not leave its neighbours shorter.
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .frame(minHeight: 216)
         .background(Color.white)
         .clipShape(RoundedRectangle(cornerRadius: 12))
         .overlay {

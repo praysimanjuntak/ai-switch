@@ -95,8 +95,16 @@
           plan.classList.remove("hidden");
         }
         const stale = Boolean(account.usageError);
-        for (const meter of node.querySelectorAll(".meter")) {
-          renderMeter(meter, account.usage?.[meter.dataset.window] ?? null, now, stale);
+        const meters = node.querySelector(".meters");
+        const [sessionMeter, weeklyMeter] = meters.querySelectorAll(".meter");
+        renderMeter(sessionMeter, account.usage?.session ?? null, now, stale);
+        renderMeter(weeklyMeter, account.usage?.weekly ?? null, now, stale);
+        // Per-model weekly buckets (Claude's "Fable" limit, for example).
+        for (const scoped of account.usage?.scoped ?? []) {
+          const meter = weeklyMeter.cloneNode(true);
+          meter.querySelector(".caption").textContent = `Weekly · ${scoped.name}`;
+          renderMeter(meter, scoped.window, now, stale);
+          meters.appendChild(meter);
         }
         node.querySelector(".source").textContent = sourceLabel(account, now);
         const issue = node.querySelector(".issue");

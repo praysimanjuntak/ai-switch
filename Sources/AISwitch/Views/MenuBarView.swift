@@ -122,6 +122,10 @@ private struct MenuProviderCard: View {
                 UsageMeter(title: "Weekly", window: profile?.usage?.weekly, accent: provider.accent,
                            isStale: profile?.authIssue != nil)
             }
+            ForEach(profile?.usage?.scoped ?? [], id: \.name) { scoped in
+                UsageMeter(title: "Weekly · \(scoped.name)", window: scoped.window, accent: provider.accent,
+                           isStale: profile?.authIssue != nil)
+            }
             if let issue = profile?.authIssue {
                 Label("Usage needs attention", systemImage: "exclamationmark.circle")
                     .font(.system(size: 9))

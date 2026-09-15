@@ -7,9 +7,17 @@ export interface UsageWindow {
   resetsAt: string | null; // ISO 8601
 }
 
+/** A weekly limit scoped to one model or surface, e.g. Claude's "Fable" bucket. */
+export interface ScopedUsageWindow {
+  name: string;
+  window: UsageWindow;
+}
+
 export interface UsageSnapshot {
   session: UsageWindow | null;
   weekly: UsageWindow | null;
+  /** Optional on the wire: pushes from older Macs omit it. */
+  scoped?: ScopedUsageWindow[];
   fetchedAt: string; // ISO 8601
   note: string | null;
 }

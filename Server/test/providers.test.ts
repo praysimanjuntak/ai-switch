@@ -35,16 +35,22 @@ describe("Codex /wham/usage", () => {
 });
 
 describe("Claude /api/oauth/usage", () => {
-  test("keeps utilization as percent used and normalizes reset timestamps", () => {
+  test("keeps utilization as percent used, normalizes reset timestamps, and lifts per-model weekly buckets", () => {
     const usage = parseClaudeUsage(
       {
         five_hour: { utilization: 12.5, resets_at: "2026-09-15T20:00:00.000000+00:00" },
         seven_day: { utilization: 51, resets_at: "2026-09-18T07:00:00.154362+00:00" },
+        limits: [
+          { kind: "session", group: "session", percent: 12, resets_at: "2026-09-15T20:00:00.000000+00:00", scope: null },
+          { kind: "weekly_all", group: "weekly", percent: 51, resets_at: "2026-09-18T07:00:00.154362+00:00", scope: null },
+          { kind: "weekly_scoped", group: "weekly", percent: 8, resets_at: "2026-09-18T07:00:00.726981+00:00", scope: { model: { id: null, display_name: "Fable" }, surface: null } },
+        ],
       },
       now,
     );
     expect(usage.session).toEqual({ usedPercent: 12.5, resetsAt: "2026-09-15T20:00:00.000Z" });
     expect(usage.weekly).toEqual({ usedPercent: 51, resetsAt: "2026-09-18T07:00:00.154Z" });
+    expect(usage.scoped).toEqual([{ name: "Fable", window: { usedPercent: 8, resetsAt: "2026-09-18T07:00:00.726Z" } }]);
   });
 
   test("missing windows stay null instead of becoming zero usage", () => {

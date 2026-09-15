@@ -1,4 +1,4 @@
-import type { Provider, PushedToken, UsageSnapshot, UsageWindow } from "./types";
+import type { Provider, PushedToken, ScopedUsageWindow, UsageSnapshot, UsageWindow } from "./types";
 
 export class TokenRejectedError extends Error {
   constructor() {
@@ -39,15 +39,31 @@ async function fetchClaudeUsage(token: PushedToken, now: Date, fetchImpl: typeof
   return parseClaudeUsage(await response.json(), now);
 }
 
+/** `five_hour`/`seven_day` are account-wide; `limits[]` carries per-model weekly buckets. */
 export function parseClaudeUsage(payload: unknown, now = new Date()): UsageSnapshot {
   const root = asRecord(payload);
-  const window = (key: string): UsageWindow | null => {
-    const limit = asRecord(root[key]);
-    const used = asNumber(limit.utilization);
+  const window = (raw: unknown, usedKey: string): UsageWindow | null => {
+    const limit = asRecord(raw);
+    const used = asNumber(limit[usedKey]);
     if (used === null) return null;
     return { usedPercent: used, resetsAt: asISODate(limit.resets_at) };
   };
-  return { session: window("five_hour"), weekly: window("seven_day"), fetchedAt: now.toISOString(), note: null };
+  const limits = Array.isArray(root.limits) ? (root.limits as unknown[]) : [];
+  const scoped = limits.flatMap((entry): ScopedUsageWindow[] => {
+    const limit = asRecord(entry);
+    const bucket = window(limit, "percent");
+    if (limit.kind !== "weekly_scoped" || bucket === null) return [];
+    const scope = asRecord(limit.scope);
+    const name = asRecord(scope.model).display_name ?? asRecord(scope.surface).display_name;
+    return [{ name: typeof name === "string" ? name : "Scoped", window: bucket }];
+  });
+  return {
+    session: window(root.five_hour, "utilization"),
+    weekly: window(root.seven_day, "utilization"),
+    scoped,
+    fetchedAt: now.toISOString(),
+    note: null,
+  };
 }
 
 // The same endpoint `codex app-server` uses for account/rateLimits/read.
