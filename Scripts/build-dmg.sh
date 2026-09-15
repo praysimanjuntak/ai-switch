@@ -51,6 +51,9 @@ xcrun strip -S "$APP_DIR/Contents/MacOS/AISwitch"
 chmod 755 "$APP_DIR/Contents/MacOS/AISwitch"
 cp Resources/Info.plist "$APP_DIR/Contents/Info.plist"
 cp Resources/AppIcon.icns "$APP_DIR/Contents/Resources/AppIcon.icns"
+# SwiftPM resources (provider logos) are architecture-independent; Bundle.module looks in Contents/Resources.
+cp -R "$ARM_BIN/AISwitch_AISwitch.bundle" "$APP_DIR/Contents/Resources/AISwitch_AISwitch.bundle"
+test -f "$APP_DIR/Contents/Resources/AISwitch_AISwitch.bundle/Assets/openai.svg"
 codesign --force --sign - "$APP_DIR"
 codesign --verify --deep --strict --all-architectures "$APP_DIR"
 xcrun lipo "$APP_DIR/Contents/MacOS/AISwitch" -verify_arch arm64 x86_64

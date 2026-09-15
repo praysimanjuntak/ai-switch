@@ -1,6 +1,18 @@
 import Combine
 import Foundation
 
+/// The credential Claude Code reads for new sessions. Injected so tests never
+/// touch the login Keychain.
+struct LiveClaudeCredential: Sendable {
+    var read: @Sendable () async throws -> Data?
+    var write: @Sendable (Data) async throws -> Void
+
+    static let system = LiveClaudeCredential(
+        read: { try await ClaudeCredentialStore.readLive() },
+        write: { try await ClaudeCredentialStore.writeLive($0) }
+    )
+}
+
 @MainActor
 final class AccountStore: ObservableObject {
     @Published private(set) var profiles: [AccountProfile] = []
@@ -15,20 +27,33 @@ final class AccountStore: ObservableObject {
     private let profilesRoot: URL
     private let backupsRoot: URL
     private var refreshTask: Task<Void, Never>?
-    private let inspectProfile: @Sendable (AccountProfile, KeychainInteraction, String?) async throws -> ProviderInspection
+    private let loginProfile: @Sendable (AIProvider, URL) async throws -> Void
+    private let inspectProfile: @Sendable (AccountProfile) async throws -> ProviderInspection
+    private let liveClaude: LiveClaudeCredential
+    /// Optional self-hosted sync server that lets a phone read usage. Every
+    /// persisted change is pushed, coalesced by the sync's debounce.
+    let sync: RemoteSync
 
     var isRefreshing: Bool { refreshingAll || !refreshingProfileIDs.isEmpty }
 
     init(
         supportDirectory: URL? = nil,
         startsAutomatically: Bool = true,
-        inspect: @escaping @Sendable (AccountProfile, KeychainInteraction, String?) async throws -> ProviderInspection = {
-            try await UsageService.inspect($0, interaction: $1, claudeService: $2)
-        }
+        login: @escaping @Sendable (AIProvider, URL) async throws -> Void = {
+            try await AccountLoginService.authenticate(provider: $0, directory: $1)
+        },
+        inspect: @escaping @Sendable (AccountProfile) async throws -> ProviderInspection = {
+            try await UsageService.inspect($0)
+        },
+        liveClaude: LiveClaudeCredential = .system,
+        sync: RemoteSync? = nil
     ) {
         let support = supportDirectory ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("AI Switch", isDirectory: true)
         inspectProfile = inspect
+        loginProfile = login
+        self.liveClaude = liveClaude
+        self.sync = sync ?? RemoteSync(directory: support)
         stateURL = support.appendingPathComponent("profiles.json")
         profilesRoot = support.appendingPathComponent("Profiles", isDirectory: true)
         backupsRoot = support.appendingPathComponent("Backups", isDirectory: true)
@@ -58,79 +83,37 @@ final class AccountStore: ObservableObject {
     }
 
     func addAccount(provider: AIProvider) async throws {
+        try Task.checkCancellation()
         let id = UUID()
         let directory = profileURL(for: id, provider: provider)
         try secureCreateDirectory(directory)
 
         do {
-            switch provider {
-            case .codex:
-                guard let executable = CommandRunner.locate("codex") else {
-                    throw AISwitchError.cliNotFound(.codex)
-                }
-                let config = directory.appendingPathComponent("config.toml")
-                try Data("cli_auth_credentials_store = \"file\"\n".utf8).write(to: config, options: .atomic)
-                let result = try await CommandRunner.run(
-                    executable: executable,
-                    arguments: ["login", "-c", "cli_auth_credentials_store=\"file\""],
-                    environment: ["CODEX_HOME": directory.path],
-                    timeout: 600
-                )
-                guard result.exitCode == 0 else {
-                    throw AISwitchError.commandFailed(result.output.isEmpty ? "Codex login was cancelled." : result.output)
-                }
-                guard manager.fileExists(atPath: directory.appendingPathComponent("auth.json").path) else {
-                    throw AISwitchError.loginDidNotCreateCredentials(.codex)
-                }
-            case .claude:
-                guard let executable = CommandRunner.locate("claude") else {
-                    throw AISwitchError.cliNotFound(.claude)
-                }
-                let result = try await CommandRunner.run(
-                    executable: executable,
-                    arguments: ["auth", "login", "--claudeai"],
-                    environment: ["CLAUDE_CONFIG_DIR": directory.path],
-                    timeout: 600
-                )
-                guard result.exitCode == 0 else {
-                    throw AISwitchError.commandFailed(result.output.isEmpty ? "Claude Code login was cancelled." : result.output)
-                }
-                let service = CredentialManager.claudeService(profileDirectory: directory.path)
-                _ = try CredentialManager.read(service: service, interaction: .allowed)
-            }
+            try await loginProfile(provider, directory)
+            try Task.checkCancellation()
 
-            var profile = AccountProfile(
-                id: id,
-                provider: provider,
-                displayName: "\(provider.displayName) account",
-                email: nil,
-                plan: nil,
-                profileDirectory: directory.path,
-                createdAt: Date(),
-                lastActivatedAt: nil,
-                usage: nil,
-                authIssue: nil
-            )
-            if let inspection = try? await inspectProfile(profile, .allowed, nil) {
+            var profile = newProfile(id: id, provider: provider, directory: directory)
+            if let inspection = try? await inspectProfile(profile) {
                 apply(inspection, to: &profile)
             }
+            // A late OAuth callback or a metadata request that ignores task
+            // cancellation must never resurrect a dismissed login.
+            try Task.checkCancellation()
+            try await switchCredentials(to: profile)
+            try Task.checkCancellation()
+
+            // Nothing is published until the switch succeeded, so a failure
+            // leaves no half-activated account behind.
             profiles.append(profile)
-            save()
-            try await activate(profile.id)
+            markActive(id)
+            Task { [weak self] in await self?.refresh(id) }
         } catch {
-            profiles.removeAll { $0.id == id }
-            activeProfileIDs = activeProfileIDs.filter { $0.value != id }
-            try? manager.removeItem(at: directory)
-            if provider == .claude {
-                try? CredentialManager.delete(service: CredentialManager.claudeService(profileDirectory: directory.path))
-            }
+            discard(directory: directory)
             throw error
         }
     }
 
-    func importCurrent(
-        provider: AIProvider, activateImported: Bool = true, interaction: KeychainInteraction = .allowed
-    ) async throws {
+    func importCurrent(provider: AIProvider, activateImported: Bool = true) async throws {
         let id = UUID()
         let directory = profileURL(for: id, provider: provider)
         try secureCreateDirectory(directory)
@@ -138,63 +121,40 @@ final class AccountStore: ObservableObject {
         do {
             switch provider {
             case .codex:
-                let live = manager.homeDirectoryForCurrentUser
-                    .appendingPathComponent(".codex/auth.json")
                 let authData: Data
-                if manager.fileExists(atPath: live.path) {
-                    authData = try Data(contentsOf: live)
+                if manager.fileExists(atPath: liveCodexCredential.path) {
+                    authData = try Data(contentsOf: liveCodexCredential)
+                } else if let keyring = try await SecurityTool.read(service: "Codex Auth", account: nil) {
+                    authData = keyring
                 } else {
-                    authData = try CredentialManager.read(service: "Codex Auth", interaction: interaction).data
+                    throw AISwitchError.notSignedIn(.codex)
                 }
                 let config = directory.appendingPathComponent("config.toml")
                 try Data("cli_auth_credentials_store = \"file\"\n".utf8).write(to: config, options: .atomic)
-                try writeSecret(authData, to: directory.appendingPathComponent("auth.json"))
+                try manager.writeOwnerOnly(authData, to: directory.appendingPathComponent("auth.json"))
             case .claude:
-                try CredentialManager.copyClaudeCredential(
-                    from: CredentialManager.claudeDefaultService,
-                    to: CredentialManager.claudeService(profileDirectory: directory.path),
-                    interaction: interaction
-                )
+                guard let data = try await liveClaude.read() else {
+                    throw AISwitchError.notSignedIn(.claude)
+                }
+                try manager.writeOwnerOnly(data, to: ClaudeCredentialStore.credentialURL(configDirectory: directory))
             }
 
-            var profile = AccountProfile(
-                id: id,
-                provider: provider,
-                displayName: "\(provider.displayName) account",
-                email: nil,
-                plan: nil,
-                profileDirectory: directory.path,
-                createdAt: Date(),
-                lastActivatedAt: nil,
-                usage: nil,
-                authIssue: nil
-            )
+            var profile = newProfile(id: id, provider: provider, directory: directory)
             if provider == .claude {
-                let config = manager.homeDirectoryForCurrentUser.appendingPathComponent(".claude.json")
+                let config = ClaudeCredentialStore.liveConfigDirectory.appendingPathComponent(".claude.json")
                 apply(UsageService.claudeMetadata(configData: try? Data(contentsOf: config)), to: &profile)
             }
-            if let inspection = try? await inspectProfile(profile, interaction, nil) {
+            if let inspection = try? await inspectProfile(profile) {
                 apply(inspection, to: &profile)
             }
-            profiles.append(profile)
-            save()
             if activateImported {
-                try await activate(id)
-            } else {
-                activeProfileIDs[provider.rawValue] = id
-                profiles[profiles.count - 1].lastActivatedAt = Date()
-                save()
-                await refresh(id)
+                try await switchCredentials(to: profile)
             }
+            profiles.append(profile)
+            markActive(id)
+            await refresh(id)
         } catch {
-            profiles.removeAll { $0.id == id }
-            activeProfileIDs = activeProfileIDs.filter { $0.value != id }
-            if provider == .claude {
-                try? CredentialManager.delete(
-                    service: CredentialManager.claudeService(profileDirectory: directory.path)
-                )
-            }
-            try? manager.removeItem(at: directory)
+            discard(directory: directory)
             throw error
         }
     }
@@ -206,7 +166,7 @@ final class AccountStore: ObservableObject {
         for provider in AIProvider.allCases {
             guard !profiles.contains(where: { $0.provider == provider }) else { continue }
             do {
-                try await importCurrent(provider: provider, activateImported: false, interaction: .forbidden)
+                try await importCurrent(provider: provider, activateImported: false)
             } catch {
                 // A missing CLI or credentials is a normal first-launch state;
                 // leave the provider empty and let the UI offer Add account.
@@ -215,109 +175,89 @@ final class AccountStore: ObservableObject {
     }
 
     func activate(_ id: UUID) async throws {
-        guard let index = profiles.firstIndex(where: { $0.id == id }) else { return }
-        let profile = profiles[index]
-        switchingProfileID = id
+        try Task.checkCancellation()
+        guard let profile = profiles.first(where: { $0.id == id }) else { return }
+        try await switchCredentials(to: profile)
+        markActive(id)
+        await refresh(id)
+    }
+
+    /// Makes `profile` the account new CLI sessions use. The credential that was
+    /// live until now is saved back into its own profile first, so a token the
+    /// CLI refreshed meanwhile is not lost.
+    private func switchCredentials(to profile: AccountProfile) async throws {
+        switchingProfileID = profile.id
         defer { switchingProfileID = nil }
+        let previous = activeProfile(for: profile.provider)
 
         switch profile.provider {
         case .codex:
-            if let oldID = activeProfileIDs[AIProvider.codex.rawValue],
-               oldID != profile.id,
-               let old = profiles.first(where: { $0.id == oldID }) {
-                try? syncLiveCodexCredential(to: old)
-            }
             let source = URL(fileURLWithPath: profile.profileDirectory).appendingPathComponent("auth.json")
             guard manager.fileExists(atPath: source.path) else {
                 throw AISwitchError.credentialsMissing(.codex)
             }
+            if let previous { try? syncLiveCodexCredential(to: previous) }
             try CodexConfigEditor.ensureFileCredentialStore()
             try backupCurrentCodexCredential()
-            let destination = manager.homeDirectoryForCurrentUser.appendingPathComponent(".codex/auth.json")
-            try writeSecret(Data(contentsOf: source), to: destination)
+            try manager.writeOwnerOnly(Data(contentsOf: source), to: liveCodexCredential)
         case .claude:
-            if let oldID = activeProfileIDs[AIProvider.claude.rawValue],
-               let old = profiles.first(where: { $0.id == oldID }) {
-                try? CredentialManager.copyClaudeCredential(
-                    from: CredentialManager.claudeDefaultService,
-                    to: CredentialManager.claudeService(profileDirectory: old.profileDirectory),
-                    interaction: .allowed
-                )
-            }
-            try CredentialManager.copyClaudeCredential(
-                from: CredentialManager.claudeService(profileDirectory: profile.profileDirectory),
-                to: CredentialManager.claudeDefaultService,
-                interaction: .allowed
-            )
+            let data = try ClaudeCredentialStore.readProfile(directory: profile.profileDirectory)
+            if let previous { try? await syncLiveClaudeCredential(to: previous) }
+            try await liveClaude.write(data)
         }
-
-        activeProfileIDs[profile.provider.rawValue] = id
-        profiles[index].lastActivatedAt = Date()
-        profiles[index].needsKeychainAccess = nil
-        save()
-        await refresh(id, userInitiated: true)
     }
 
-    func refreshAll(userInitiated: Bool = false) async {
+    private func markActive(_ id: UUID) {
+        guard let index = profiles.firstIndex(where: { $0.id == id }) else { return }
+        activeProfileIDs[profiles[index].provider.rawValue] = id
+        profiles[index].lastActivatedAt = Date()
+        save()
+    }
+
+    /// Checks every account at once. Each provider check is a separate child
+    /// process or request, so one slow account no longer delays the others.
+    func refreshAll() async {
         guard !refreshingAll else { return }
         refreshingAll = true
         defer { refreshingAll = false }
-        for profile in profiles {
-            guard !Task.isCancelled else { break }
-            await refresh(profile.id, userInitiated: userInitiated)
+        await withTaskGroup(of: Void.self) { group in
+            for profile in profiles {
+                group.addTask { await self.refresh(profile.id) }
+            }
         }
     }
 
-    func grantKeychainAccess(_ id: UUID) async {
-        await refresh(id, userInitiated: true, interaction: .allowed)
-    }
-
-    func refresh(
-        _ id: UUID, userInitiated: Bool = false, interaction: KeychainInteraction = .forbidden
-    ) async {
+    func refresh(_ id: UUID) async {
         guard let profile = profiles.first(where: { $0.id == id }) else { return }
         guard !Task.isCancelled, !refreshingProfileIDs.contains(id) else { return }
-        guard profile.needsKeychainAccess != true || userInitiated else { return }
         refreshingProfileIDs.insert(id)
         defer { refreshingProfileIDs.remove(id) }
         do {
             if isActive(profile) {
+                // The CLI may have refreshed its token since the last check.
                 switch profile.provider {
-                case .codex:
-                    try? syncLiveCodexCredential(to: profile)
-                case .claude:
-                    // Usage reads the live credential directly. Copying it into
-                    // the saved profile here caused extra permission requests.
-                    break
+                case .codex: try? syncLiveCodexCredential(to: profile)
+                case .claude: try? await syncLiveClaudeCredential(to: profile)
                 }
             }
-            let claudeService = profile.provider == .claude && isActive(profile)
-                ? CredentialManager.claudeDefaultService : nil
-            let inspection = try await inspectProfile(profile, interaction, claudeService)
+            let inspection = try await inspectProfile(profile)
             try Task.checkCancellation()
             if profile.provider == .codex, isActive(profile) {
-                let refreshed = URL(fileURLWithPath: profile.profileDirectory)
-                    .appendingPathComponent("auth.json")
-                let live = manager.homeDirectoryForCurrentUser.appendingPathComponent(".codex/auth.json")
+                // The app-server check can refresh the profile's token in place.
+                let refreshed = URL(fileURLWithPath: profile.profileDirectory).appendingPathComponent("auth.json")
                 if manager.fileExists(atPath: refreshed.path) {
-                    try? writeSecret(Data(contentsOf: refreshed), to: live)
+                    try? manager.writeOwnerOnly(Data(contentsOf: refreshed), to: liveCodexCredential)
                 }
             }
             guard let index = profiles.firstIndex(where: { $0.id == id }) else { return }
             apply(inspection, to: &profiles[index])
             profiles[index].authIssue = nil
-            profiles[index].needsKeychainAccess = nil
             save()
         } catch is CancellationError {
             return
         } catch {
             guard let index = profiles.firstIndex(where: { $0.id == id }) else { return }
             profiles[index].authIssue = error.localizedDescription
-            if case AISwitchError.keychainAccessRequired = error {
-                profiles[index].needsKeychainAccess = true
-            } else {
-                profiles[index].needsKeychainAccess = nil
-            }
             save()
         }
     }
@@ -330,16 +270,22 @@ final class AccountStore: ObservableObject {
         save()
     }
 
-    func remove(_ id: UUID) {
-        guard let profile = profiles.first(where: { $0.id == id }), !isActive(profile) else { return }
+    /// Forgets the account and deletes its saved credentials. The CLI's live
+    /// sign-in is left as it is, so removing the active account only clears the
+    /// active marker here.
+    func remove(_ id: UUID) async {
+        guard let profile = profiles.first(where: { $0.id == id }) else { return }
+        try? manager.removeItem(at: URL(fileURLWithPath: profile.profileDirectory).deletingLastPathComponent())
+        profiles.removeAll { $0.id == id }
+        if isActive(profile) { activeProfileIDs.removeValue(forKey: profile.provider.rawValue) }
+        save()
         if profile.provider == .claude {
-            try? CredentialManager.delete(
-                service: CredentialManager.claudeService(profileDirectory: profile.profileDirectory)
+            // Versions before 0.3 kept the profile itself in the Keychain, and an
+            // interrupted CLI login can leave its item behind too.
+            await ClaudeCredentialStore.deleteKeychain(
+                service: ClaudeCredentialStore.service(configDirectory: profile.profileDirectory)
             )
         }
-        try? manager.removeItem(at: URL(fileURLWithPath: profile.profileDirectory))
-        profiles.removeAll { $0.id == id }
-        save()
     }
 
     func dismissError() {
@@ -374,6 +320,13 @@ final class AccountStore: ObservableObject {
         } catch {
             errorMessage = "Could not save profiles: \(error.localizedDescription)"
         }
+        sync.schedulePush(profiles: profiles, activeProfileIDs: activeProfileIDs)
+    }
+
+    /// Sends the current accounts to the sync server without waiting for the debounce.
+    func pushToSync() async {
+        sync.schedulePush(profiles: profiles, activeProfileIDs: activeProfileIDs)
+        await sync.flush()
     }
 
     private func scheduleRefresh() {
@@ -385,6 +338,28 @@ final class AccountStore: ObservableObject {
                 await self?.refreshAll()
             }
         }
+    }
+
+    private func newProfile(id: UUID, provider: AIProvider, directory: URL) -> AccountProfile {
+        AccountProfile(
+            id: id,
+            provider: provider,
+            displayName: "\(provider.displayName) account",
+            email: nil,
+            plan: nil,
+            profileDirectory: directory.path,
+            createdAt: Date(),
+            lastActivatedAt: nil,
+            usage: nil,
+            authIssue: nil
+        )
+    }
+
+    /// Reverts a sign-in or import that did not complete. Nothing is published
+    /// or saved before the credential switch succeeds, so only the directory,
+    /// which holds every credential this app wrote for the account, remains.
+    private func discard(directory: URL) {
+        try? manager.removeItem(at: directory.deletingLastPathComponent())
     }
 
     private func profileURL(for id: UUID, provider: AIProvider) -> URL {
@@ -401,26 +376,28 @@ final class AccountStore: ObservableObject {
         )
     }
 
-    private func writeSecret(_ data: Data, to url: URL) throws {
-        try manager.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try data.write(to: url, options: .atomic)
-        try manager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+    private var liveCodexCredential: URL {
+        manager.homeDirectoryForCurrentUser.appendingPathComponent(".codex/auth.json")
     }
 
     private func backupCurrentCodexCredential() throws {
-        let source = manager.homeDirectoryForCurrentUser.appendingPathComponent(".codex/auth.json")
-        guard manager.fileExists(atPath: source.path) else { return }
+        guard manager.fileExists(atPath: liveCodexCredential.path) else { return }
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyyMMdd-HHmmss"
         let destination = backupsRoot.appendingPathComponent("codex-auth-\(formatter.string(from: Date())).json")
-        try writeSecret(Data(contentsOf: source), to: destination)
+        try manager.writeOwnerOnly(Data(contentsOf: liveCodexCredential), to: destination)
     }
 
     private func syncLiveCodexCredential(to profile: AccountProfile) throws {
-        let live = manager.homeDirectoryForCurrentUser.appendingPathComponent(".codex/auth.json")
-        guard manager.fileExists(atPath: live.path) else { return }
+        guard manager.fileExists(atPath: liveCodexCredential.path) else { return }
         let destination = URL(fileURLWithPath: profile.profileDirectory).appendingPathComponent("auth.json")
-        try writeSecret(Data(contentsOf: live), to: destination)
+        try manager.writeOwnerOnly(Data(contentsOf: liveCodexCredential), to: destination)
+    }
+
+    private func syncLiveClaudeCredential(to profile: AccountProfile) async throws {
+        guard let data = try await liveClaude.read() else { return }
+        let destination = ClaudeCredentialStore.credentialURL(configDirectory: URL(fileURLWithPath: profile.profileDirectory))
+        try manager.writeOwnerOnly(data, to: destination)
     }
 
     private func apply(_ inspection: ProviderInspection, to profile: inout AccountProfile) {

@@ -1,0 +1,17 @@
+# BEGIN ai-switch-sync
+__DOMAIN__ {
+	encode zstd gzip
+	request_body {
+		max_size 512KB
+	}
+	header {
+		-Server
+		Referrer-Policy "no-referrer"
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Content-Security-Policy "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; manifest-src 'self'"
+	}
+	reverse_proxy aiswitch-sync:8787
+}
+# END ai-switch-sync

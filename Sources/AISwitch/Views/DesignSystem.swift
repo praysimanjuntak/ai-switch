@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 extension AIProvider {
@@ -10,11 +11,55 @@ extension AIProvider {
 
     var softAccent: Color { accent.opacity(0.08) }
 
-    var symbol: String {
+    /// The vendor's mark as a template image, so it takes the current
+    /// foreground style like an SF Symbol would.
+    var logo: NSImage {
         switch self {
-        case .codex: "sparkle"
-        case .claude: "sun.max.fill"
+        case .codex: Self.openAI
+        case .claude: Self.anthropic
         }
+    }
+
+    private static let openAI = templateImage("openai", extension: "svg")
+    private static let anthropic = templateImage("anthropic", extension: "png")
+
+    /// SwiftPM's generated `Bundle.module` only looks beside the executable and
+    /// at the absolute build path, which is wrong for an app bundle and, when the
+    /// checkout lives under Documents, triggers a folder-access prompt. Look in
+    /// Contents/Resources first (built app), then beside the executable (`swift run`).
+    private static let resources: Bundle = {
+        let name = "AISwitch_AISwitch.bundle"
+        let candidates = [Bundle.main.resourceURL, Bundle.main.bundleURL]
+        for candidate in candidates {
+            if let bundle = candidate.flatMap({ Bundle(url: $0.appendingPathComponent(name)) }) { return bundle }
+        }
+        fatalError("Missing \(name); the build scripts copy it into Contents/Resources.")
+    }()
+
+    private static func templateImage(_ name: String, extension ext: String) -> NSImage {
+        guard let url = resources.url(forResource: name, withExtension: ext, subdirectory: "Assets"),
+              let image = NSImage(contentsOf: url) else {
+            fatalError("Missing bundled logo \(name).\(ext) in \(resources.bundlePath).")
+        }
+        image.isTemplate = true
+        image.size = NSSize(width: 16, height: 16) // Intrinsic size for menus; views scale it explicitly.
+        return image
+    }
+}
+
+/// A provider's mark, sized like an SF Symbol of the given point size.
+struct ProviderLogo: View {
+    let provider: AIProvider
+    var size: CGFloat = 12
+
+    var body: some View {
+        Image(nsImage: provider.logo)
+            .renderingMode(.template)
+            .resizable()
+            .interpolation(.high)
+            .scaledToFit()
+            .frame(width: size, height: size)
+            .accessibilityHidden(true)
     }
 }
 
@@ -110,8 +155,7 @@ struct ProviderMark: View {
     var size: CGFloat = 32
 
     var body: some View {
-        Image(systemName: provider.symbol)
-            .font(.system(size: size * 0.46, weight: .medium))
+        ProviderLogo(provider: provider, size: size * 0.5)
             .foregroundStyle(provider.accent)
             .frame(width: size, height: size)
             .background(provider.softAccent)
@@ -137,6 +181,7 @@ struct PlanBadge: View {
 }
 
 struct UsageMeter: View {
+    var title: String? = nil
     let window: UsageWindow?
     let accent: Color
     var isStale = false
@@ -151,6 +196,10 @@ struct UsageMeter: View {
     private func meter(reset: UsageResetDisplay) -> some View {
         VStack(alignment: .leading, spacing: 5) {
             HStack(alignment: .firstTextBaseline, spacing: 3) {
+                if let title {
+                    SectionCaption(title: title)
+                    Spacer(minLength: 4)
+                }
                 Text(window.map { "\(Int($0.remainingPercent.rounded()))%" } ?? "—")
                     .font(.system(size: 12, weight: .semibold, design: .rounded))
                     .monospacedDigit()
@@ -158,7 +207,7 @@ struct UsageMeter: View {
                 if window != nil {
                     Text("left").font(.system(size: 9)).foregroundStyle(AppPalette.tertiaryInk)
                 }
-                Spacer(minLength: 0)
+                if title == nil { Spacer(minLength: 0) }
                 if isStale, window != nil {
                     Image(systemName: "clock").font(.system(size: 8)).foregroundStyle(AppPalette.tertiaryInk)
                 }

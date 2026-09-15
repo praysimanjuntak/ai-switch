@@ -24,15 +24,18 @@ Only test a build you obtained directly from someone you trust. Do not disable
 Gatekeeper or other system-wide security protections to install it. If you need
 a normal, verified installation experience, request a signed, notarized build.
 
-ACCOUNTS AND KEYCHAIN
+ACCOUNTS AND CREDENTIALS
 
-Claude credentials are stored in your Mac's Keychain. macOS may ask for access
-when you import, switch, or explicitly grant access to an account. Enter your
-password only into macOS's own dialog, never send it to anyone.
+Saved Claude Code profiles are owner-only .credentials.json files inside the
+app's profile folders; nothing is stored in the Keychain for them. The live
+credential Claude Code uses is read and written with the system "security"
+tool, exactly as Claude Code does, so no Keychain permission dialogs appear.
+If macOS ever does show a Keychain dialog, enter your password only into
+macOS's own dialog, never send it to anyone.
 
-Allow approves usage access for the current AI Switch session. Always Allow
-remembers access in macOS. Installing a different ad-hoc build may require a new
-approval. Background usage checks do not display permission dialogs.
+Accounts saved by AI Switch 0.2.x lived in the Keychain. The active Claude
+account migrates on its first refresh; other saved Claude accounts show
+Attention and must be removed and added again.
 
 Codex credentials are stored locally in restricted-access profile files. When
 activating a Codex account, AI Switch sets cli_auth_credentials_store to file
@@ -45,7 +48,7 @@ an independent app, not an official OpenAI or Anthropic product.
 Your profiles and credential backups live in:
   ~/Library/Application Support/AI Switch/
 
-Do not share that folder, your CLI auth files, or your Keychain credentials.
+Do not share that folder or your CLI auth files.
 Share only the DMG and, optionally, its matching SHA-256 checksum file.
 
 TESTING STATUS

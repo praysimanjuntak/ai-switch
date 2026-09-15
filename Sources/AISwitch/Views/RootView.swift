@@ -17,6 +17,7 @@ struct RootView: View {
     @State private var filter: AccountFilter = .all
     @State private var search = ""
     @State private var showsAddAccount = false
+    @State private var showsPhoneSync = false
     @FocusState private var searchFocused: Bool
 
     private var filteredProfiles: [AccountProfile] {
@@ -73,6 +74,9 @@ struct RootView: View {
         .sheet(isPresented: $showsAddAccount) {
             AddAccountSheet().environmentObject(store).preferredColorScheme(.light)
         }
+        .sheet(isPresented: $showsPhoneSync) {
+            PhoneSyncSheet(sync: store.sync).environmentObject(store).preferredColorScheme(.light)
+        }
     }
 
     private var sidebar: some View {
@@ -89,13 +93,19 @@ struct RootView: View {
             .padding(.bottom, 34)
 
             SectionCaption(title: "Workspace").padding(.horizontal, 20).padding(.bottom, 9)
-            sidebarButton(.all, title: "All accounts", symbol: "square.stack", count: store.profiles.count)
-            sidebarButton(.active, title: "Active now", symbol: "bolt", count: store.profiles.filter { store.isActive($0) }.count)
+            sidebarButton(.all, title: "All accounts", count: store.profiles.count) {
+                Image(systemName: "square.stack").font(.system(size: 12))
+            }
+            sidebarButton(.active, title: "Active now", count: store.profiles.filter { store.isActive($0) }.count) {
+                Image(systemName: "bolt").font(.system(size: 12))
+            }
 
             SectionCaption(title: "Providers").padding(.horizontal, 20).padding(.top, 27).padding(.bottom, 9)
             ForEach(AIProvider.allCases) { provider in
-                sidebarButton(.provider(provider), title: provider.shortName, symbol: provider.symbol,
-                              count: store.profiles.filter { $0.provider == provider }.count)
+                sidebarButton(.provider(provider), title: provider.shortName,
+                              count: store.profiles.filter { $0.provider == provider }.count) {
+                    ProviderLogo(provider: provider, size: 12)
+                }
             }
             Spacer(minLength: 24)
             VStack(alignment: .leading, spacing: 12) {
@@ -123,10 +133,12 @@ struct RootView: View {
         .background(AppPalette.sidebar.ignoresSafeArea())
     }
 
-    private func sidebarButton(_ value: AccountFilter, title: String, symbol: String, count: Int) -> some View {
+    private func sidebarButton(
+        _ value: AccountFilter, title: String, count: Int, @ViewBuilder icon: () -> some View
+    ) -> some View {
         Button { filter = value } label: {
             HStack(spacing: 10) {
-                Image(systemName: symbol).font(.system(size: 12)).frame(width: 15)
+                icon().frame(width: 15)
                 Text(title).font(.system(size: 11, weight: filter == value ? .semibold : .regular))
                 Spacer(minLength: 4)
                 Text("\(count)")
@@ -158,17 +170,23 @@ struct RootView: View {
             }
             Spacer()
             IconButton(symbol: "arrow.clockwise", help: "Refresh all usage", isWorking: store.isRefreshing) {
-                Task { await store.refreshAll(userInitiated: true) }
+                Task { await store.refreshAll() }
             }
             .disabled(store.isRefreshing)
             .keyboardShortcut("r", modifiers: .command)
+            IconButton(symbol: store.sync.isConfigured ? "iphone.badge.checkmark" : "iphone",
+                       help: store.sync.isConfigured ? "Phone sync connected" : "Show usage on your phone") {
+                showsPhoneSync = true
+            }
             Menu {
                 ForEach(AIProvider.allCases) { provider in
-                    Button("Import current \(provider.shortName)", systemImage: provider.symbol) {
+                    Button {
                         Task {
                             do { try await store.importCurrent(provider: provider) }
                             catch { store.report(error) }
                         }
+                    } label: {
+                        Label { Text("Import current \(provider.shortName)") } icon: { Image(nsImage: provider.logo) }
                     }
                 }
             } label: {
@@ -190,7 +208,7 @@ struct RootView: View {
     }
 
     private var accountsSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 8) {
                 Text(filter.title).font(.system(size: 13, weight: .semibold))
                 Text("\(filteredProfiles.count)")
@@ -203,45 +221,41 @@ struct RootView: View {
                 searchField
             }
             .frame(height: 30)
-            GeometryReader { geometry in
-                if filteredProfiles.isEmpty {
-                    emptyState.frame(width: geometry.size.width, height: min(240, geometry.size.height)).surface()
-                } else {
-                    VStack(spacing: 0) {
-                        columnHeaders
-                        ScrollView {
-                            LazyVStack(spacing: 0) {
-                                ForEach(filteredProfiles) { profile in
-                                    AccountRowView(
-                                        profile: profile,
-                                        isActive: store.isActive(profile),
-                                        isSwitching: store.switchingProfileID == profile.id,
-                                        isRefreshing: store.refreshingProfileIDs.contains(profile.id),
-                                        activate: {
-                                            Task {
-                                                do { try await store.activate(profile.id) }
-                                                catch { store.report(error) }
-                                            }
-                                        },
-                                        refresh: { Task { await store.refresh(profile.id, userInitiated: true) } },
-                                        grantKeychainAccess: { Task { await store.grantKeychainAccess(profile.id) } },
-                                        rename: { store.rename(profile.id, to: $0) },
-                                        remove: { store.remove(profile.id) }
-                                    )
-                                    if profile.id != filteredProfiles.last?.id {
-                                        Rectangle().fill(AppPalette.line.opacity(0.7)).frame(height: 1)
+            if filteredProfiles.isEmpty {
+                emptyState.frame(maxWidth: .infinity).frame(height: 240).surface()
+                Spacer(minLength: 0)
+            } else {
+                ScrollView {
+                    LazyVGrid(columns: Self.gridColumns, alignment: .leading, spacing: 14) {
+                        ForEach(filteredProfiles) { profile in
+                            AccountCardView(
+                                profile: profile,
+                                isActive: store.isActive(profile),
+                                isSwitching: store.switchingProfileID == profile.id,
+                                isRefreshing: store.refreshingProfileIDs.contains(profile.id),
+                                activate: {
+                                    Task {
+                                        do { try await store.activate(profile.id) }
+                                        catch { store.report(error) }
                                     }
-                                }
-                            }
+                                },
+                                refresh: { Task { await store.refresh(profile.id) } },
+                                rename: { store.rename(profile.id, to: $0) },
+                                remove: { Task { await store.remove(profile.id) } }
+                            )
                         }
-                        .scrollIndicators(.automatic)
                     }
-                    .frame(height: min(CGFloat(filteredProfiles.count) * 67 + 30, geometry.size.height))
-                    .surface()
+                    // Room for the hover shadow, which the scroll view would otherwise clip.
+                    .padding(6)
                 }
+                .padding(-6)
+                .scrollIndicators(.automatic)
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
+
+    private static let gridColumns = Array(repeating: GridItem(.flexible(), spacing: 14), count: 4)
 
     private var searchField: some View {
         HStack(spacing: 7) {
@@ -267,20 +281,6 @@ struct RootView: View {
         .padding(.horizontal, 9)
         .frame(width: 185, height: 29)
         .surface(radius: 7)
-    }
-
-    private var columnHeaders: some View {
-        HStack(spacing: AccountColumns.spacing) {
-            SectionCaption(title: "Account").frame(maxWidth: .infinity, alignment: .leading)
-            SectionCaption(title: "5-hour limit").frame(width: AccountColumns.meter, alignment: .leading)
-            SectionCaption(title: "Weekly limit").frame(width: AccountColumns.meter, alignment: .leading)
-            SectionCaption(title: "Status").frame(width: AccountColumns.action)
-            Color.clear.frame(width: AccountColumns.menu, height: 1)
-        }
-        .padding(.horizontal, 16)
-        .frame(height: 30)
-        .background(AppPalette.sidebar.opacity(0.5))
-        .overlay(alignment: .bottom) { Rectangle().fill(AppPalette.line).frame(height: 1) }
     }
 
     private var footer: some View {
@@ -338,11 +338,7 @@ private struct ActiveSummary: View {
                         .font(.system(size: 8, weight: .medium)).tracking(0.7)
                 }
                 .foregroundStyle(AppPalette.secondaryInk)
-                if profile?.needsKeychainAccess == true {
-                    Label("Access needed", systemImage: "lock")
-                        .font(.system(size: 9))
-                        .foregroundStyle(AppPalette.warning)
-                } else if let weekly = profile?.usage?.weekly {
+                if let weekly = profile?.usage?.weekly {
                     Text("\(Int(weekly.remainingPercent.rounded()))% weekly left")
                         .font(.system(size: 10, weight: .medium))
                         .foregroundStyle(provider.accent)

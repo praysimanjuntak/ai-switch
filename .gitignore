@@ -11,11 +11,17 @@ dist/
 *.dmg
 *.zip
 
+# Sync server runtime state and secrets.
+Server/data/
+Server/.env
+Server/node_modules/
+
 # Local accounts, credentials, signing keys, and environment overrides.
 .env
 .env.*
 !.env.example
 auth.json
+.credentials.json
 profiles.json
 *.keychain
 *.keychain-db

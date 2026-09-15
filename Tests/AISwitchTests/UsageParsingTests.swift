@@ -64,16 +64,35 @@ func parsesClaudeWindows() {
     #expect(snapshot.weekly?.resetsAt != nil)
 }
 
-@Test("Claude Keychain service is isolated per config directory")
+@Test("Claude Keychain service names match Claude Code's per-config-directory scheme")
 func claudeKeychainServiceName() {
-    #expect(CredentialManager.claudeService(profileDirectory: nil) == "Claude Code-credentials")
-    let first = CredentialManager.claudeService(profileDirectory: "/tmp/AI Switch/one")
-    let again = CredentialManager.claudeService(profileDirectory: "/tmp/AI Switch/one")
-    let second = CredentialManager.claudeService(profileDirectory: "/tmp/AI Switch/two")
+    #expect(ClaudeCredentialStore.service(configDirectory: nil) == "Claude Code-credentials")
+    let first = ClaudeCredentialStore.service(configDirectory: "/tmp/AI Switch/one")
+    let again = ClaudeCredentialStore.service(configDirectory: "/tmp/AI Switch/one")
+    let second = ClaudeCredentialStore.service(configDirectory: "/tmp/AI Switch/two")
     #expect(first == again)
     #expect(first != second)
-    #expect(first.hasPrefix("Claude Code-credentials-"))
-    #expect(first.count == "Claude Code-credentials-".count + 8)
+    // `printf '/tmp/AI Switch/one' | shasum -a 256 | cut -c1-8`, the scheme Claude Code keys its item with.
+    #expect(first == "Claude Code-credentials-046a2eb0")
+    #expect(ClaudeCredentialStore.service(configDirectory: "/tmp/e\u{301}")
+            == ClaudeCredentialStore.service(configDirectory: "/tmp/\u{e9}"))
+}
+
+@Test("An access token past its expiry is reported as needing renewal, not as signed out")
+func expiredClaudeTokenIsDetectedLocally() throws {
+    let now = Date(timeIntervalSince1970: 1_800_000_000)
+    func credential(expiresAt: Double?) -> Data {
+        let expiry = expiresAt.map { "\"expiresAt\":\($0)," } ?? ""
+        return Data(#"{"claudeAiOauth":{\#(expiry)"accessToken":"sk-ant-oat01-test"}}"#.utf8)
+    }
+    #expect(try ClaudeCredentialStore.accessToken(from: credential(expiresAt: 1_800_000_001_000), now: now) == "sk-ant-oat01-test")
+    #expect(try ClaudeCredentialStore.accessToken(from: credential(expiresAt: nil), now: now) == "sk-ant-oat01-test")
+    #expect(throws: AISwitchError.self) {
+        try ClaudeCredentialStore.accessToken(from: credential(expiresAt: 1_800_000_000_000), now: now)
+    }
+    #expect(throws: AISwitchError.self) {
+        try ClaudeCredentialStore.accessToken(from: Data(#"{"claudeAiOauth":{}}"#.utf8), now: now)
+    }
 }
 
 @Test("Claude account metadata comes from local config and credential metadata")

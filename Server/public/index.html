@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#fbfbf9">
+  <meta name="mobile-web-app-capable" content="yes">
+  <title>AI Switch</title>
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" href="/icons/icon-192.png">
+  <link rel="apple-touch-icon" href="/icons/icon-192.png">
+  <link rel="stylesheet" href="/app.css">
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <span class="mark" aria-hidden="true">⇄</span>
+      <div>
+        <h1>AI Switch</h1>
+        <p id="status" class="status">Loading…</p>
+      </div>
+    </div>
+    <button id="refresh" class="icon-button" type="button" aria-label="Refresh usage" title="Refresh usage">↻</button>
+  </header>
+
+  <main id="main">
+    <section id="pair" class="panel hidden">
+      <h2>Pair with your Mac</h2>
+      <p>Open <strong>AI Switch → Phone</strong> on your Mac and scan the QR code with your phone's camera. It opens this page and links it to your accounts.</p>
+      <p class="muted">Nothing is stored on your phone except the pairing token.</p>
+    </section>
+    <section id="error" class="panel warning hidden"></section>
+    <section id="accounts" class="grid" aria-live="polite"></section>
+  </main>
+
+  <footer class="foot">
+    <span id="updated"></span>
+    <button id="unpair" class="link hidden" type="button">Unpair this phone</button>
+  </footer>
+
+  <template id="card">
+    <article class="card">
+      <div class="identity">
+        <span class="provider-mark"><img class="logo" alt=""></span>
+        <div class="who">
+          <div class="name"></div>
+          <div class="subtitle"></div>
+        </div>
+        <span class="active-pill hidden">Active</span>
+      </div>
+      <div class="meters">
+        <div class="meter" data-window="session">
+          <div class="meter-head"><span class="caption">5-hour</span><span class="percent"></span></div>
+          <div class="bar"><div class="fill"></div></div>
+          <div class="reset"></div>
+        </div>
+        <div class="meter" data-window="weekly">
+          <div class="meter-head"><span class="caption">Weekly</span><span class="percent"></span></div>
+          <div class="bar"><div class="fill"></div></div>
+          <div class="reset"></div>
+        </div>
+      </div>
+      <div class="card-foot">
+        <span class="plan hidden"></span>
+        <span class="source"></span>
+      </div>
+      <p class="issue hidden"></p>
+    </article>
+  </template>
+
+  <script src="/app.js"></script>
+</body>
+</html>

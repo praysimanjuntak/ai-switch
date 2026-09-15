@@ -21,14 +21,12 @@ enum UsageService {
         }
     }
 
-    static func inspect(
-        _ profile: AccountProfile, interaction: KeychainInteraction = .forbidden, claudeService: String? = nil
-    ) async throws -> ProviderInspection {
+    static func inspect(_ profile: AccountProfile) async throws -> ProviderInspection {
         switch profile.provider {
         case .codex:
             return try await inspectCodex(profileDirectory: profile.profileDirectory)
         case .claude:
-            return try await inspectClaude(profileDirectory: profile.profileDirectory, interaction: interaction, service: claudeService)
+            return try await inspectClaude(profileDirectory: profile.profileDirectory)
         }
     }
 
@@ -41,7 +39,7 @@ enum UsageService {
         // delay mirrors the documented JSONL handshake while keeping this a short,
         // self-contained child process.
         let script = #"""
-        (printf '%s\n' '{"id":1,"method":"initialize","params":{"clientInfo":{"name":"ai-switch","title":"AI Switch","version":"0.1.0"},"capabilities":{"experimentalApi":true}}}'; sleep 0.25; printf '%s\n' '{"method":"initialized","params":{}}' '{"id":2,"method":"account/read","params":{"refreshToken":false}}' '{"id":3,"method":"account/rateLimits/read","params":null}'; sleep 3) | "$1" app-server --stdio
+        (printf '%s\n' '{"id":1,"method":"initialize","params":{"clientInfo":{"name":"ai-switch","title":"AI Switch","version":"\#(AppInfo.version)"},"capabilities":{"experimentalApi":true}}}'; sleep 0.25; printf '%s\n' '{"method":"initialized","params":{}}' '{"id":2,"method":"account/read","params":{"refreshToken":false}}' '{"id":3,"method":"account/rateLimits/read","params":null}'; sleep 3) | "$1" app-server --stdio
         """#
         let result = try await CommandRunner.run(
             executable: URL(fileURLWithPath: "/bin/zsh"),
@@ -105,22 +103,14 @@ enum UsageService {
         return UsageSnapshot(session: session, weekly: weekly, fetchedAt: now, note: note)
     }
 
-    static func inspectClaude(
-        profileDirectory: String, interaction: KeychainInteraction = .forbidden, service: String? = nil
-    ) async throws -> ProviderInspection {
-        // Do not launch `claude auth status` here: it starts the interactive
+    static func inspectClaude(profileDirectory: String) async throws -> ProviderInspection {
+        // Never launch `claude auth status` here: it starts the interactive
         // `security` helper, sometimes more than once for a single status check.
-        let service = service ?? CredentialManager.claudeService(profileDirectory: profileDirectory)
-        let credential = try CredentialManager.claudeUsageCredentials.read(service: service, interaction: interaction)
-        let token = try CredentialManager.accessToken(from: credential.data)
+        let credential = try ClaudeCredentialStore.readProfile(directory: profileDirectory)
         let config = URL(fileURLWithPath: profileDirectory).appendingPathComponent(".claude.json")
-        var inspection = claudeMetadata(configData: try? Data(contentsOf: config), credentialData: credential.data)
-        do {
-            inspection.usage = try await fetchClaudeUsage(accessToken: token)
-        } catch AISwitchError.claudeSessionExpired {
-            CredentialManager.claudeUsageCredentials.invalidate(service: service, matching: credential.data)
-            throw AISwitchError.claudeSessionExpired
-        }
+        var inspection = claudeMetadata(configData: try? Data(contentsOf: config), credentialData: credential)
+        let token = try ClaudeCredentialStore.accessToken(from: credential)
+        inspection.usage = try await fetchClaudeUsage(accessToken: token)
         return inspection
     }
 
@@ -144,7 +134,7 @@ enum UsageService {
         request.timeoutInterval = 20
         request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
         request.setValue("oauth-2025-04-20", forHTTPHeaderField: "anthropic-beta")
-        request.setValue("ai-switch/0.1.0", forHTTPHeaderField: "User-Agent")
+        request.setValue("ai-switch/\(AppInfo.version)", forHTTPHeaderField: "User-Agent")
 
         let (data, response) = try await URLSession.shared.data(for: request)
         if (response as? HTTPURLResponse)?.statusCode == 401 {

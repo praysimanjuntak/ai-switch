@@ -10,9 +10,9 @@ struct AISwitchApp: App {
             RootView()
                 .environmentObject(store)
                 .preferredColorScheme(.light)
-                .frame(minWidth: 940, minHeight: 600)
+                .frame(minWidth: 1120, minHeight: 640)
         }
-        .defaultSize(width: 1080, height: 740)
+        .defaultSize(width: 1180, height: 760)
         .windowStyle(.hiddenTitleBar)
 
         MenuBarExtra {

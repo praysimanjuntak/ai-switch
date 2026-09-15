@@ -15,7 +15,7 @@ struct MenuBarView: View {
                     Task {
                         for provider in AIProvider.allCases {
                             if let profile = store.activeProfile(for: provider) {
-                                await store.refresh(profile.id, userInitiated: true)
+                                await store.refresh(profile.id)
                             }
                         }
                     }
@@ -117,23 +117,17 @@ private struct MenuProviderCard: View {
                 .accessibilityLabel("Switch \(provider.shortName) account")
             }
             HStack(spacing: 20) {
-                VStack(alignment: .leading, spacing: 6) {
-                    SectionCaption(title: "5-hour")
-                    UsageMeter(window: profile?.usage?.session, accent: provider.accent,
-                               isStale: profile?.authIssue != nil)
-                }
-                VStack(alignment: .leading, spacing: 6) {
-                    SectionCaption(title: "Weekly")
-                    UsageMeter(window: profile?.usage?.weekly, accent: provider.accent,
-                               isStale: profile?.authIssue != nil)
-                }
+                UsageMeter(title: "5-hour", window: profile?.usage?.session, accent: provider.accent,
+                           isStale: profile?.authIssue != nil)
+                UsageMeter(title: "Weekly", window: profile?.usage?.weekly, accent: provider.accent,
+                           isStale: profile?.authIssue != nil)
             }
-            if profile?.authIssue != nil {
-                Label(profile?.needsKeychainAccess == true ? "Grant access in Manage accounts" : "Usage needs attention",
-                      systemImage: profile?.needsKeychainAccess == true ? "lock" : "exclamationmark.circle")
+            if let issue = profile?.authIssue {
+                Label("Usage needs attention", systemImage: "exclamationmark.circle")
                     .font(.system(size: 9))
                     .foregroundStyle(AppPalette.warning)
                     .frame(maxWidth: .infinity, alignment: .leading)
+                    .help(issue)
             }
         }
         .padding(13)

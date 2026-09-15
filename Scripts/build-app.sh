@@ -16,6 +16,9 @@ mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"
 cp "$PROJECT_DIR/.build/release/AISwitch" "$MACOS_DIR/AISwitch"
 cp "$PROJECT_DIR/Resources/Info.plist" "$CONTENTS_DIR/Info.plist"
 cp "$PROJECT_DIR/Resources/AppIcon.icns" "$RESOURCES_DIR/AppIcon.icns"
+# SwiftPM resources (provider logos); Bundle.module looks in Contents/Resources.
+rm -rf "$RESOURCES_DIR/AISwitch_AISwitch.bundle"
+cp -R "$PROJECT_DIR/.build/release/AISwitch_AISwitch.bundle" "$RESOURCES_DIR/AISwitch_AISwitch.bundle"
 chmod 755 "$MACOS_DIR/AISwitch"
 
 codesign --force --deep --sign - "$APP_DIR"

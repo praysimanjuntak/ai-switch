@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 struct AddAccountSheet: View {
@@ -6,14 +7,15 @@ struct AddAccountSheet: View {
     @State private var provider: AIProvider = .codex
     @State private var isWorking = false
     @State private var localError: String?
+    @State private var loginTask: Task<Void, Never>?
+    @State private var loginID: UUID?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 23) {
             HStack {
                 AppMark(size: 32)
                 Spacer()
-                IconButton(symbol: "xmark", help: "Close") { dismiss() }
-                    .disabled(isWorking)
+                IconButton(symbol: "xmark", help: isWorking ? "Cancel sign-in and close" : "Close", action: close)
                     .keyboardShortcut(.cancelAction)
             }
             VStack(alignment: .leading, spacing: 8) {
@@ -40,23 +42,32 @@ struct AddAccountSheet: View {
 
             VStack(alignment: .leading, spacing: 12) {
                 signInDetail("safari", title: "Sign in with your browser", detail: "Use your existing \(provider.shortName) account.")
-                signInDetail("lock.shield", title: "Saved securely on your Mac",
-                             detail: provider == .claude ? "Protected by macOS Keychain." : "Only your Mac user can access the saved credentials.")
+                signInDetail("lock.shield", title: "Saved on this Mac only",
+                             detail: "Kept in an owner-only file inside this app's profile folder. Nothing is sent anywhere else.")
             }
             .padding(.vertical, 2)
 
             if let localError {
-                Label(localError, systemImage: "exclamationmark.circle")
-                    .font(.system(size: 11))
-                    .foregroundStyle(AppPalette.warning)
-                    .fixedSize(horizontal: false, vertical: true)
+                VStack(alignment: .leading, spacing: 6) {
+                    Label("Sign-in didn't finish", systemImage: "exclamationmark.circle")
+                        .font(.system(size: 11, weight: .semibold))
+                    ScrollView {
+                        Text(localError)
+                            .font(.system(size: 11))
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .frame(maxHeight: 90)
+                }
+                .foregroundStyle(AppPalette.warning)
             }
 
             VStack(spacing: 10) {
                 Button { beginLogin() } label: {
                     HStack(spacing: 8) {
                         if isWorking { ProgressView().controlSize(.mini).tint(.white) }
-                        Text(isWorking ? "Waiting for sign-in…" : "Continue with \(provider.displayName)")
+                        Text(isWorking ? "Waiting for sign-in…" : localError == nil
+                             ? "Continue with \(provider.displayName)" : "Try again with \(provider.displayName)")
                         if !isWorking { Image(systemName: "arrow.right").font(.system(size: 10)) }
                     }
                     .frame(maxWidth: .infinity)
@@ -64,7 +75,11 @@ struct AddAccountSheet: View {
                 .buttonStyle(AppButtonStyle(prominent: true))
                 .disabled(isWorking || !store.cliAvailable(for: provider))
                 .keyboardShortcut(.defaultAction)
-                Text(isWorking ? "Finish signing in in your browser. This window will close when you're done."
+                if isWorking {
+                    Button("Cancel sign-in", action: close)
+                        .buttonStyle(AppButtonStyle())
+                }
+                Text(isWorking ? "Finish in your browser, or cancel here at any time."
                      : "Your other accounts stay connected.")
                     .font(.system(size: 10))
                     .foregroundStyle(AppPalette.tertiaryInk)
@@ -76,7 +91,10 @@ struct AddAccountSheet: View {
         .frame(width: 442)
         .fixedSize(horizontal: false, vertical: true)
         .background(AppPalette.canvas)
-        .interactiveDismissDisabled(isWorking)
+        .onDisappear(perform: cancelLogin)
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
+            cancelLogin()
+        }
     }
 
     private func signInDetail(_ symbol: String, title: String, detail: String) -> some View {
@@ -94,17 +112,43 @@ struct AddAccountSheet: View {
     }
 
     private func beginLogin() {
+        guard loginTask == nil else { return }
+        let attempt = UUID()
+        let selectedProvider = provider
+        loginID = attempt
         isWorking = true
         localError = nil
-        Task {
+        loginTask = Task {
+            defer {
+                if loginID == attempt {
+                    isWorking = false
+                    loginTask = nil
+                    loginID = nil
+                }
+            }
             do {
-                try await store.addAccount(provider: provider)
+                try await store.addAccount(provider: selectedProvider)
+                guard !Task.isCancelled, loginID == attempt else { return }
                 dismiss()
+            } catch is CancellationError {
+                // Cancelling is a normal action, not a sign-in failure.
             } catch {
+                guard !Task.isCancelled, loginID == attempt else { return }
                 localError = error.localizedDescription
-                isWorking = false
             }
         }
+    }
+
+    private func cancelLogin() {
+        loginID = nil
+        loginTask?.cancel()
+        loginTask = nil
+        isWorking = false
+    }
+
+    private func close() {
+        cancelLogin()
+        dismiss()
     }
 }
 

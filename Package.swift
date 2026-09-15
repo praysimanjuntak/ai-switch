@@ -13,7 +13,8 @@ let package = Package(
     targets: [
         .executableTarget(
             name: "AISwitch",
-            path: "Sources/AISwitch"
+            path: "Sources/AISwitch",
+            resources: [.copy("Assets")]
         ),
         .testTarget(
             name: "AISwitchTests",

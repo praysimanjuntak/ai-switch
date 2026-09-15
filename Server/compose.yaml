@@ -1,0 +1,15 @@
+services:
+  aiswitch-sync:
+    build: .
+    container_name: aiswitch-sync
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - aiswitch_data:/data
+    networks:
+      - shared_ingress
+networks:
+  shared_ingress:
+    external: true
+volumes:
+  aiswitch_data:
