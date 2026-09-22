@@ -66,14 +66,21 @@ final class RemoteSync: ObservableObject {
 
     func configure(serverURL: URL, pushSecret: String) throws {
         let secret = pushSecret.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let scheme = serverURL.scheme?.lowercased(), ["https", "http"].contains(scheme), serverURL.host != nil else {
+        guard var components = URLComponents(url: serverURL, resolvingAgainstBaseURL: false),
+              let scheme = components.scheme?.lowercased(), ["https", "http"].contains(scheme), components.host != nil else {
             throw AISwitchError.invalidResponse("Enter the sync server address as https://host.")
         }
         guard secret.count >= 16 else {
             throw AISwitchError.invalidResponse("The push secret must be at least 16 characters.")
         }
-        var normalized = serverURL
-        if normalized.path.hasSuffix("/") { normalized = URL(string: String(normalized.absoluteString.dropLast())) ?? normalized }
+        // API paths are appended to this base, so it must end without a slash
+        // and carry no query or fragment.
+        components.query = nil
+        components.fragment = nil
+        while components.path.hasSuffix("/") { components.path.removeLast() }
+        guard let normalized = components.url else {
+            throw AISwitchError.invalidResponse("Enter the sync server address as https://host.")
+        }
         let updated = RemoteSyncSettings(serverURL: normalized, pushSecret: secret, deviceID: settings?.deviceID ?? UUID())
         try FileManager.default.writeOwnerOnly(JSONEncoder().encode(updated), to: fileURL)
         settings = updated

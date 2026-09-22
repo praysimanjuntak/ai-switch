@@ -1,3 +1,4 @@
+import { version } from "../package.json";
 import type { Provider, PushedToken, ScopedUsageWindow, UsageSnapshot, UsageWindow } from "./types";
 
 export class TokenRejectedError extends Error {
@@ -8,7 +9,7 @@ export class TokenRejectedError extends Error {
 }
 
 const FETCH_TIMEOUT_MS = 10_000;
-const USER_AGENT = "ai-switch-sync/0.3.0";
+const USER_AGENT = `ai-switch-sync/${version}`;
 
 export async function fetchUsage(
   provider: Provider,

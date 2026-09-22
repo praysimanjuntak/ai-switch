@@ -25,23 +25,16 @@ enum SecurityTool {
     }
 
     /// Creates or updates the item. Returns false when the Keychain rejected the
-    /// write, for example while it is locked.
+    /// write, for example while it is locked, or when the item is too large for
+    /// `security -i`; callers fall back to an owner-only file in both cases. The
+    /// secret is never passed as a process argument, where `ps` could read it.
     static func write(_ data: Data, service: String, account: String) async throws -> Bool {
         let hex = data.map { String(format: "%02x", $0) }.joined()
         let line = "add-generic-password -U -a \"\(account)\" -s \"\(service)\" -X \"\(hex)\"\n"
-        let result: CommandResult
-        if line.utf8.count <= interactiveLineLimit {
-            // Keep the secret out of process arguments, where `ps` could read it.
-            result = try await CommandRunner.run(
-                executable: executable, arguments: ["-i"], input: Data(line.utf8), timeout: 10
-            )
-        } else {
-            result = try await CommandRunner.run(
-                executable: executable,
-                arguments: ["add-generic-password", "-U", "-a", account, "-s", service, "-X", hex],
-                timeout: 10
-            )
-        }
+        guard line.utf8.count <= interactiveLineLimit else { return false }
+        let result = try await CommandRunner.run(
+            executable: executable, arguments: ["-i"], input: Data(line.utf8), timeout: 10
+        )
         return result.exitCode == 0
     }
 

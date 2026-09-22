@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import Testing
 @testable import AISwitch
@@ -136,4 +137,50 @@ func missingClaudeMetadataIsOptional() {
     let malformed = UsageService.claudeMetadata(configData: Data("invalid".utf8))
     #expect(malformed.email == nil)
     #expect(malformed.plan == nil)
+}
+
+@Test("Codex account and usage come from one app-server handshake, and the server is stopped afterwards")
+func inspectsCodexOverAppServerSession() async throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent("AISwitchCodexTests-\(UUID())")
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    // Answers the JSONL handshake and then parks forever: only termination ends it.
+    let fake = directory.appendingPathComponent("codex")
+    try #"""
+    #!/bin/sh
+    printf '%s\n' "$CODEX_HOME" > "\#(directory.path)/codex-home"
+    printf '%s\n' "$*" > "\#(directory.path)/arguments"
+    echo $$ > "\#(directory.path)/fake.pid"
+    while IFS= read -r line; do
+      case "$line" in
+        *'"id":1'*) printf '%s\n' '{"id":1,"result":{}}' ;;
+        *'"id":2'*) printf '%s\n' '{"id":2,"result":{"account":{"email":"fake@example.com","planType":"plus"}}}' ;;
+        *'"id":3'*) printf '%s\n' '{"id":3,"result":{"rateLimits":{"primary":{"usedPercent":40,"windowDurationMins":300,"resetsAt":1800000000}}}}'
+                    sleep 30 ;;
+      esac
+    done
+    """#.write(to: fake, atomically: true, encoding: .utf8)
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: fake.path)
+
+    let profileDirectory = directory.appendingPathComponent("profile").path
+    let start = ContinuousClock.now
+    let inspection = try await UsageService.inspectCodex(profileDirectory: profileDirectory, executable: fake)
+    let elapsed = start.duration(to: .now)
+
+    #expect(inspection.email == "fake@example.com")
+    #expect(inspection.plan == "plus")
+    #expect(inspection.usage?.session?.usedPercent == 40)
+    #expect(inspection.usage?.session?.resetsAt == Date(timeIntervalSince1970: 1_800_000_000))
+    let home = try String(contentsOf: directory.appendingPathComponent("codex-home"), encoding: .utf8)
+    #expect(home.trimmingCharacters(in: .whitespacesAndNewlines) == profileDirectory)
+    let arguments = try String(contentsOf: directory.appendingPathComponent("arguments"), encoding: .utf8)
+    #expect(arguments.trimmingCharacters(in: .whitespacesAndNewlines) == "app-server --stdio")
+    // The handshake now ends with the last answer; the old fixed-sleep pipeline
+    // could not finish in under 3.25 seconds.
+    #expect(elapsed < .seconds(3))
+
+    let recorded = try String(contentsOf: directory.appendingPathComponent("fake.pid"), encoding: .utf8)
+    let pid = try #require(pid_t(recorded.trimmingCharacters(in: .whitespacesAndNewlines)))
+    #expect(kill(pid, 0) == -1)
 }

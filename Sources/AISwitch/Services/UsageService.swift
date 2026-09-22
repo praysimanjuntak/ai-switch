@@ -10,43 +10,71 @@ enum UsageService {
         }
     }
 
-    static func inspectCodex(profileDirectory: String) async throws -> ProviderInspection {
-        guard let codex = CommandRunner.locate("codex") else {
+    /// `executable` only exists so tests can point the handshake at a fake
+    /// app-server; the app always uses the located `codex` binary. With
+    /// `refreshToken`, Codex renews the profile's token before answering.
+    static func inspectCodex(profileDirectory: String, executable: URL? = nil, refreshToken: Bool = false) async throws -> ProviderInspection {
+        guard let codex = executable ?? CommandRunner.locate("codex") else {
             throw AISwitchError.cliNotFound(.codex)
         }
 
-        // App-server requests must be sent after its initialize response. The small
-        // delay mirrors the documented JSONL handshake while keeping this a short,
-        // self-contained child process.
-        let script = #"""
-        (printf '%s\n' '{"id":1,"method":"initialize","params":{"clientInfo":{"name":"ai-switch","title":"AI Switch","version":"\#(AppInfo.version)"},"capabilities":{"experimentalApi":true}}}'; sleep 0.25; printf '%s\n' '{"method":"initialized","params":{}}' '{"id":2,"method":"account/read","params":{"refreshToken":false}}' '{"id":3,"method":"account/rateLimits/read","params":null}'; sleep 3) | "$1" app-server --stdio
-        """#
-        let result = try await CommandRunner.run(
-            executable: URL(fileURLWithPath: "/bin/zsh"),
-            arguments: ["-c", script, "ai-switch", codex.path],
+        // App-server speaks JSON-RPC over JSONL: its requests are only answered
+        // after the initialize response arrives.
+        let initialize = #"{"id":1,"method":"initialize","params":{"clientInfo":{"name":"ai-switch","title":"AI Switch","version":"\#(AppInfo.version)"},"capabilities":{"experimentalApi":true}}}"#
+        let initialized = #"{"method":"initialized","params":{}}"#
+        let readAccount = #"{"id":2,"method":"account/read","params":{"refreshToken":\#(refreshToken)}}"#
+        let readRateLimits = #"{"id":3,"method":"account/rateLimits/read","params":null}"#
+
+        return try await CommandRunner.interact(
+            executable: codex,
+            arguments: ["app-server", "--stdio"],
             environment: ["CODEX_HOME": profileDirectory],
             timeout: 12
-        )
+        ) { session in
+            try session.send(initialize)
+            var transcript: [String] = []
+            var account: [String: Any]?
+            var usageResult: [String: Any]?
+            var accountAnswered = false
+            var usageAnswered = false
 
-        let objects = result.output.split(separator: "\n").compactMap { line -> [String: Any]? in
-            guard let data = line.data(using: .utf8) else { return nil }
-            return try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            for await line in session.lines {
+                transcript.append(line)
+                guard let data = line.data(using: .utf8),
+                      let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+                else { continue }
+                switch object["id"] as? Int {
+                case 1:
+                    try session.send(initialized)
+                    try session.send(readAccount)
+                    try session.send(readRateLimits)
+                case 2:
+                    if let failure = object["error"] as? [String: Any] {
+                        throw AISwitchError.invalidResponse(failure["message"] as? String ?? line)
+                    }
+                    account = (object["result"] as? [String: Any])?["account"] as? [String: Any]
+                    accountAnswered = true
+                case 3:
+                    // A rate-limit error only means this account has no usage to show.
+                    usageResult = object["error"] == nil ? object["result"] as? [String: Any] : nil
+                    usageAnswered = true
+                default:
+                    continue
+                }
+                if accountAnswered, usageAnswered { break }
+            }
+
+            guard let account else {
+                let output = transcript.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+                throw AISwitchError.invalidResponse(output.isEmpty ? "Codex did not return account information." : output)
+            }
+
+            return ProviderInspection(
+                email: account["email"] as? String,
+                plan: account["planType"] as? String,
+                usage: usageResult.map { parseCodexUsage($0) }
+            )
         }
-        let accountResult = objects.first { ($0["id"] as? Int) == 2 }?["result"] as? [String: Any]
-        let account = accountResult?["account"] as? [String: Any]
-        let usageResult = objects.first { ($0["id"] as? Int) == 3 }?["result"] as? [String: Any]
-
-        guard account != nil else {
-            let message = result.output.isEmpty ? "Codex did not return account information." : result.output
-            throw AISwitchError.invalidResponse(message)
-        }
-
-        let snapshot = usageResult.map { parseCodexUsage($0) }
-        return ProviderInspection(
-            email: account?["email"] as? String,
-            plan: account?["planType"] as? String,
-            usage: snapshot
-        )
     }
 
     static func parseCodexUsage(_ result: [String: Any], now: Date = Date()) -> UsageSnapshot {
