@@ -7,6 +7,7 @@ struct AccountCardView: View {
     let isRefreshing: Bool
     let activate: () -> Void
     let refresh: () -> Void
+    let renew: () -> Void
     let rename: (String) -> Void
     let remove: () -> Void
 
@@ -143,6 +144,8 @@ struct AccountCardView: View {
         Menu {
             Button("Refresh usage", systemImage: "arrow.clockwise", action: refresh)
                 .disabled(isRefreshing || isSwitching)
+            Button("Renew sign-in", systemImage: "key.horizontal", action: renew)
+                .disabled(isRefreshing || isSwitching)
             Button("Rename…", systemImage: "pencil") {
                 editedName = profile.displayName
                 showsRename = true
@@ -176,6 +179,12 @@ struct AccountCardView: View {
                     .font(.system(size: 10))
                     .foregroundStyle(AppPalette.tertiaryInk)
             }
+            Button("Renew sign-in") {
+                showsIssue = false
+                renew()
+            }
+            .buttonStyle(AppButtonStyle(compact: true))
+            .help("Ask \(profile.provider.displayName) to renew this account's sign-in")
         }
         .padding(16)
         .frame(width: 270)

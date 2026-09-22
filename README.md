@@ -39,6 +39,7 @@ shasum -a 256 -c AI-Switch-0.2.2-macOS-universal-beta.dmg.sha256
 - Activate an account for new CLI sessions with one click.
 - Read Codex limits through the local Codex app-server protocol.
 - Read Claude Code's five-hour and seven-day limit data from the same authenticated usage surface used by the CLI.
+- Renew an account's expired sign-in with **Renew sign-in** (in the card's Attention popover, its actions menu, and the menu-bar panel). Nothing is renewed automatically.
 - Refresh automatically every five minutes and on demand.
 - See local reset clock times on account cards and in the menu-bar panel; hover a meter for the full date, seconds, and time zone. Missing reset times are explicitly marked as not reported.
 - Filter by provider or active accounts, search names and email addresses, and rename accounts from their actions menu.
@@ -48,7 +49,7 @@ shasum -a 256 -c AI-Switch-0.2.2-macOS-universal-beta.dmg.sha256
 
 Claude Code keeps the credential for new sessions in the login Keychain (item `Claude Code-credentials`), falling back to `~/.claude/.credentials.json` when the Keychain refuses a write. AI Switch reads and writes that live item with `/usr/bin/security`, the same tool Claude Code uses, so macOS never shows the per-app authorization dialog that Security framework access from a third-party app would trigger. Saved profiles never touch the Keychain: each one is a `0600` file inside its own profile directory. When you switch, the outgoing account's current credential (including any token Claude Code refreshed) is saved back into its profile before the incoming profile is written live, and refreshes of the active account keep its profile file in sync.
 
-An access token that has passed its expiry is reported as needing renewal rather than as a sign-out: start a Claude Code session with that account active and it renews itself, then refresh in AI Switch. AI Switch does not call the OAuth token endpoint on your behalf.
+An access token that has passed its expiry is reported as needing renewal rather than as a sign-out. **Renew sign-in** starts one tool-less print-mode Claude Code session (`claude -p --tools ""`) inside the profile's own config directory, so Claude Code renews the token with its own client and AI Switch folds the result back into the profile file; this spends one small message of that account's quota. For Codex it asks the Codex app-server to refresh the token. AI Switch never calls an OAuth token endpoint itself, and nothing is renewed without your click. Starting a CLI session with the account active still works as before; refresh afterwards.
 
 **Upgrading from 0.2.x:** earlier versions stored Claude profiles as Keychain items. The active Claude account migrates itself on the first refresh. Any other saved Claude account shows **Attention** with a message asking you to remove and re-add it; removing it also deletes the old Keychain item.
 

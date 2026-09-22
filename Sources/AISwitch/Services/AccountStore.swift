@@ -29,6 +29,7 @@ final class AccountStore: ObservableObject {
     private var refreshTask: Task<Void, Never>?
     private let loginProfile: @Sendable (AIProvider, URL) async throws -> Void
     private let inspectProfile: @Sendable (AccountProfile) async throws -> ProviderInspection
+    private let renewProfile: @Sendable (AIProvider, URL) async throws -> Void
     private let liveClaude: LiveClaudeCredential
     /// Optional self-hosted sync server that lets a phone read usage. Every
     /// persisted change is pushed, coalesced by the sync's debounce.
@@ -45,6 +46,9 @@ final class AccountStore: ObservableObject {
         inspect: @escaping @Sendable (AccountProfile) async throws -> ProviderInspection = {
             try await UsageService.inspect($0)
         },
+        renew: @escaping @Sendable (AIProvider, URL) async throws -> Void = {
+            try await AccountLoginService.renew(provider: $0, directory: $1)
+        },
         liveClaude: LiveClaudeCredential = .system,
         sync: RemoteSync? = nil
     ) {
@@ -52,6 +56,7 @@ final class AccountStore: ObservableObject {
             .appendingPathComponent("AI Switch", isDirectory: true)
         inspectProfile = inspect
         loginProfile = login
+        renewProfile = renew
         self.liveClaude = liveClaude
         self.sync = sync ?? RemoteSync(directory: support)
         stateURL = support.appendingPathComponent("profiles.json")
@@ -228,6 +233,17 @@ final class AccountStore: ObservableObject {
     }
 
     func refresh(_ id: UUID) async {
+        await check(id, renewing: false)
+    }
+
+    /// Asks the CLI to renew the account's credential, then re-reads usage.
+    /// Nothing renews automatically: the CLI session this starts may spend a
+    /// small amount of the account's quota.
+    func renew(_ id: UUID) async {
+        await check(id, renewing: true)
+    }
+
+    private func check(_ id: UUID, renewing: Bool) async {
         guard let profile = profiles.first(where: { $0.id == id }) else { return }
         guard !Task.isCancelled, !refreshingProfileIDs.contains(id) else { return }
         refreshingProfileIDs.insert(id)
@@ -240,14 +256,18 @@ final class AccountStore: ObservableObject {
                 case .claude: try? await syncLiveClaudeCredential(to: profile)
                 }
             }
+            if renewing {
+                try await renewProfile(profile.provider, URL(fileURLWithPath: profile.profileDirectory))
+                try Task.checkCancellation()
+                // Refresh tokens rotate, so the renewed credential must replace
+                // the live one before the CLI's next session.
+                if isActive(profile) { try await writeProfileCredentialLive(profile) }
+            }
             let inspection = try await inspectProfile(profile)
             try Task.checkCancellation()
             if profile.provider == .codex, isActive(profile) {
                 // The app-server check can refresh the profile's token in place.
-                let refreshed = URL(fileURLWithPath: profile.profileDirectory).appendingPathComponent("auth.json")
-                if manager.fileExists(atPath: refreshed.path) {
-                    try? manager.writeOwnerOnly(Data(contentsOf: refreshed), to: liveCodexCredential)
-                }
+                try? await writeProfileCredentialLive(profile)
             }
             guard let index = profiles.firstIndex(where: { $0.id == id }) else { return }
             apply(inspection, to: &profiles[index])
@@ -398,6 +418,18 @@ final class AccountStore: ObservableObject {
         guard let data = try await liveClaude.read() else { return }
         let destination = ClaudeCredentialStore.credentialURL(configDirectory: URL(fileURLWithPath: profile.profileDirectory))
         try manager.writeOwnerOnly(data, to: destination)
+    }
+
+    /// Makes the profile's saved credential the one new CLI sessions use.
+    private func writeProfileCredentialLive(_ profile: AccountProfile) async throws {
+        switch profile.provider {
+        case .codex:
+            let source = URL(fileURLWithPath: profile.profileDirectory).appendingPathComponent("auth.json")
+            guard manager.fileExists(atPath: source.path) else { return }
+            try manager.writeOwnerOnly(Data(contentsOf: source), to: liveCodexCredential)
+        case .claude:
+            try await liveClaude.write(ClaudeCredentialStore.readProfile(directory: profile.profileDirectory))
+        }
     }
 
     private func apply(_ inspection: ProviderInspection, to profile: inout AccountProfile) {

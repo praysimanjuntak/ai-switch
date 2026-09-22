@@ -132,7 +132,7 @@ enum AISwitchError: LocalizedError, Sendable {
         case .invalidResponse(let message):
             message
         case .claudeSessionExpired:
-            "Claude's sign-in for this account needs renewing. Start a Claude Code session with it active, then refresh."
+            "Claude's sign-in for this account needs renewing. Use Renew sign-in, or start a Claude Code session with it active, then refresh."
         }
     }
 }

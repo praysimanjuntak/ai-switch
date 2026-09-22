@@ -126,12 +126,18 @@ private struct MenuProviderCard: View {
                 UsageMeter(title: "Weekly · \(scoped.name)", window: scoped.window, accent: provider.accent,
                            isStale: profile?.authIssue != nil)
             }
-            if let issue = profile?.authIssue {
-                Label("Usage needs attention", systemImage: "exclamationmark.circle")
-                    .font(.system(size: 9))
-                    .foregroundStyle(AppPalette.warning)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .help(issue)
+            if let profile, let issue = profile.authIssue {
+                HStack(spacing: 8) {
+                    Label("Usage needs attention", systemImage: "exclamationmark.circle")
+                        .help(issue)
+                    Spacer()
+                    Button("Renew") { Task { await store.renew(profile.id) } }
+                        .buttonStyle(.plain)
+                        .disabled(store.isRefreshing || store.switchingProfileID != nil)
+                        .help("Ask \(provider.displayName) to renew this account's sign-in")
+                }
+                .font(.system(size: 9))
+                .foregroundStyle(AppPalette.warning)
             }
         }
         .padding(13)
