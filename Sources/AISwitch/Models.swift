@@ -36,22 +36,45 @@ struct ScopedUsageWindow: Codable, Equatable, Sendable {
     var window: UsageWindow
 }
 
+/// Credits that reset an account's usage limits on request, like Codex's
+/// "usage limit resets".
+struct LimitResets: Codable, Equatable, Sendable {
+    struct Credit: Codable, Equatable, Sendable {
+        var title: String?
+        var expiresAt: Date?
+    }
+
+    /// How many resets the account can use now.
+    var available: Int
+    /// The available credits the provider listed, soonest to expire first.
+    var credits: [Credit]
+}
+
+/// How a reset request ended; mirrors Codex's own outcomes.
+enum LimitResetOutcome: Equatable, Sendable {
+    case reset, nothingToReset, noneLeft, alreadyUsed
+}
+
 struct UsageSnapshot: Codable, Equatable, Sendable {
     var session: UsageWindow?
     var weekly: UsageWindow?
     var scoped: [ScopedUsageWindow]
     var fetchedAt: Date
     var note: String?
+    /// Nil when the provider doesn't offer resets for this account.
+    var resets: LimitResets?
 
-    init(session: UsageWindow?, weekly: UsageWindow?, scoped: [ScopedUsageWindow] = [], fetchedAt: Date, note: String?) {
+    init(session: UsageWindow?, weekly: UsageWindow?, scoped: [ScopedUsageWindow] = [], fetchedAt: Date, note: String?,
+         resets: LimitResets? = nil) {
         self.session = session
         self.weekly = weekly
         self.scoped = scoped
         self.fetchedAt = fetchedAt
         self.note = note
+        self.resets = resets
     }
 
-    // Snapshots saved before 0.3 have no `scoped` key.
+    // Snapshots saved before 0.3 have no `scoped` key, and before 0.5 no `resets`.
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         session = try container.decodeIfPresent(UsageWindow.self, forKey: .session)
@@ -59,8 +82,8 @@ struct UsageSnapshot: Codable, Equatable, Sendable {
         scoped = try container.decodeIfPresent([ScopedUsageWindow].self, forKey: .scoped) ?? []
         fetchedAt = try container.decode(Date.self, forKey: .fetchedAt)
         note = try container.decodeIfPresent(String.self, forKey: .note)
+        resets = try container.decodeIfPresent(LimitResets.self, forKey: .resets)
     }
-
     static let empty = UsageSnapshot(
         session: nil,
         weekly: nil,

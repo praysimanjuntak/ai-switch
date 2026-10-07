@@ -224,7 +224,8 @@ struct RootView: View {
             refresh: { Task { await store.refresh(profile.id) } },
             renew: { Task { await store.renew(profile.id) } },
             rename: { store.rename(profile.id, to: $0) },
-            remove: { Task { await store.remove(profile.id) } }
+            remove: { Task { await store.remove(profile.id) } },
+            useReset: { try await store.useReset(profile.id) }
         )
     }
 

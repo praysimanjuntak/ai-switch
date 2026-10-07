@@ -84,14 +84,16 @@ func codexTurnUpdatesMatchingProfile() async throws {
     defer { try? fixture.remove() }
     let sessions = try SessionsFixture()
     defer { try? sessions.remove() }
-    func codexProfile(_ name: String, user: String, account: String) throws -> AccountProfile {
+    func codexProfile(_ name: String, user: String, account: String, usage: UsageSnapshot? = nil) throws -> AccountProfile {
         let directory = fixture.directory.appendingPathComponent(name)
         try FileManager.default.writeOwnerOnly(codexAuth(user: user, account: account), to: directory.appendingPathComponent("auth.json"))
         return AccountProfile(id: UUID(), provider: .codex, displayName: name, email: nil, plan: "plus",
-                              profileDirectory: directory.path, createdAt: Date(), lastActivatedAt: nil, usage: nil, authIssue: nil)
+                              profileDirectory: directory.path, createdAt: Date(), lastActivatedAt: nil, usage: usage, authIssue: nil)
     }
     let personal = try codexProfile("personal", user: "user-1", account: "acct-1")
-    let team = try codexProfile("team", user: "user-1", account: "acct-team")
+    // Session logs carry no reset credits, so a turn must not erase the count.
+    let team = try codexProfile("team", user: "user-1", account: "acct-team", usage: UsageSnapshot(
+        session: nil, weekly: nil, fetchedAt: .distantPast, note: nil, resets: LimitResets(available: 2, credits: [])))
     try fixture.save([personal, team], active: ["codex": personal.id])
     let store = AccountStore(supportDirectory: fixture.directory, startsAutomatically: false,
                              inspect: { _ in ProviderInspection() }, codexSessions: sessions.root)
@@ -102,6 +104,7 @@ func codexTurnUpdatesMatchingProfile() async throws {
     await store.pollCodexSessions(now: sessions.day)
     #expect(store.profiles.first { $0.id == team.id }?.usage?.session?.usedPercent == 55)
     #expect(store.profiles.first { $0.id == team.id }?.plan == "pro")
+    #expect(store.profiles.first { $0.id == team.id }?.usage?.resets?.available == 2)
     #expect(store.profiles.first { $0.id == personal.id }?.usage == nil)
     let reopened = AccountStore(supportDirectory: fixture.directory, startsAutomatically: false, codexSessions: nil)
     #expect(reopened.profiles.first { $0.id == team.id }?.usage?.weekly?.usedPercent == 20)

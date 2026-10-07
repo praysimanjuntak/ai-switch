@@ -38,6 +38,7 @@ final class AccountStore: ObservableObject {
     private let inspectProfile: @Sendable (AccountProfile) async throws -> ProviderInspection
     private let renewProfile: @Sendable (AIProvider, URL) async throws -> Void
     private let identify: @Sendable (AIProvider, Data) async -> AccountIdentity?
+    private let resetLimits: @Sendable (AIProvider, URL) async throws -> LimitResetOutcome
     private let liveClaude: LiveClaudeCredential
     private let codexFeed: CodexSessionFeed?
     /// Accounts whose provider is limiting usage checks, and when to try again.
@@ -63,6 +64,9 @@ final class AccountStore: ObservableObject {
         identify: @escaping @Sendable (AIProvider, Data) async -> AccountIdentity? = {
             await CredentialIdentity.identify($0, credential: $1)
         },
+        resetLimits: @escaping @Sendable (AIProvider, URL) async throws -> LimitResetOutcome = {
+            try await UsageService.useLimitReset(provider: $0, directory: $1)
+        },
         liveClaude: LiveClaudeCredential = .system,
         codexSessions: URL? = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".codex/sessions", isDirectory: true),
@@ -74,6 +78,7 @@ final class AccountStore: ObservableObject {
         loginProfile = login
         renewProfile = renew
         self.identify = identify
+        self.resetLimits = resetLimits
         self.liveClaude = liveClaude
         codexFeed = codexSessions.map { CodexSessionFeed(root: $0) }
         self.sync = sync ?? RemoteSync(directory: support)
@@ -261,6 +266,27 @@ final class AccountStore: ObservableObject {
         await check(id, renewing: true)
     }
 
+    /// Spends one of the account's usage limit resets, then re-reads its usage.
+    /// Only on request: resets are scarce, and some expire.
+    func useReset(_ id: UUID) async throws -> LimitResetOutcome {
+        guard let profile = profiles.first(where: { $0.id == id }) else { throw CancellationError() }
+        guard !refreshingProfileIDs.contains(id) else {
+            throw AISwitchError.commandFailed("This account is being checked. Try again in a moment.")
+        }
+        refreshingProfileIDs.insert(id)
+        let outcome: LimitResetOutcome
+        do {
+            defer { refreshingProfileIDs.remove(id) }
+            // The reset runs on the profile's own sign-in, which the CLI may have
+            // renewed meanwhile; any token renewed during it goes back live.
+            let live = isActive(profile) ? await adoptLiveCredential(into: profile, renewing: true) : nil
+            outcome = try await resetLimits(profile.provider, URL(fileURLWithPath: profile.profileDirectory))
+            if let live { _ = try? await publishCredential(of: profile, replacing: live) }
+        }
+        await refresh(id)
+        return outcome
+    }
+
     private func check(_ id: UUID, renewing: Bool) async {
         guard let profile = profiles.first(where: { $0.id == id }) else { return }
         guard !Task.isCancelled, !refreshingProfileIDs.contains(id) else { return }
@@ -419,7 +445,10 @@ final class AccountStore: ObservableObject {
                     ?? (try? savedCredential(of: profile)).flatMap { CredentialIdentity.codex(authData: $0) }
                 guard let identity, identity.isSameAccount(as: snapshot.identity),
                       snapshot.usage.fetchedAt > profile.usage?.fetchedAt ?? .distantPast else { continue }
-                profiles[index].usage = snapshot.usage
+                // Session logs carry no reset credits; keep the last known count.
+                var usage = snapshot.usage
+                usage.resets = profile.usage?.resets
+                profiles[index].usage = usage
                 profiles[index].plan = snapshot.plan ?? profile.plan
                 changed = true
             }

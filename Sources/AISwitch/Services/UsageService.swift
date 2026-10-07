@@ -18,11 +18,8 @@ enum UsageService {
             throw AISwitchError.cliNotFound(.codex)
         }
 
-        // App-server speaks JSON-RPC over JSONL: its requests are only answered
-        // after the initialize response arrives.
-        let initialize = #"{"id":1,"method":"initialize","params":{"clientInfo":{"name":"ai-switch","title":"AI Switch","version":"\#(AppInfo.version)"},"capabilities":{"experimentalApi":true}}}"#
-        let initialized = #"{"method":"initialized","params":{}}"#
         let readAccount = #"{"id":2,"method":"account/read","params":{"refreshToken":\#(refreshToken)}}"#
+        // Detailed reads include the account's reset credits, with their expiry.
         let readRateLimits = #"{"id":3,"method":"account/rateLimits/read","params":null}"#
 
         return try await CommandRunner.interact(
@@ -31,7 +28,7 @@ enum UsageService {
             environment: ["CODEX_HOME": profileDirectory],
             timeout: 12
         ) { session in
-            try session.send(initialize)
+            try session.send(codexInitialize)
             var transcript: [String] = []
             var account: [String: Any]?
             var usageResult: [String: Any]?
@@ -45,7 +42,7 @@ enum UsageService {
                 else { continue }
                 switch object["id"] as? Int {
                 case 1:
-                    try session.send(initialized)
+                    try session.send(codexInitialized)
                     try session.send(readAccount)
                     try session.send(readRateLimits)
                 case 2:
@@ -74,6 +71,64 @@ enum UsageService {
                 plan: account["planType"] as? String,
                 usage: usageResult.map { parseCodexUsage($0) }
             )
+        }
+    }
+
+    /// App-server speaks JSON-RPC over JSONL: its requests are only answered
+    /// after the initialize response arrives.
+    private static let codexInitialize = #"{"id":1,"method":"initialize","params":{"clientInfo":{"name":"ai-switch","title":"AI Switch","version":"\#(AppInfo.version)"},"capabilities":{"experimentalApi":true}}}"#
+    private static let codexInitialized = #"{"method":"initialized","params":{}}"#
+
+    /// Spends one of an account's usage limit resets. Only Codex offers resets an
+    /// app can use; Claude Code's are an experiment it runs itself.
+    static func useLimitReset(provider: AIProvider, directory: URL) async throws -> LimitResetOutcome {
+        switch provider {
+        case .codex: return try await consumeCodexReset(profileDirectory: directory.path)
+        case .claude: throw AISwitchError.invalidResponse("Claude Code usage limit resets can only be used in Claude Code.")
+        }
+    }
+
+    /// Spends one usage limit reset through the app-server's
+    /// `account/rateLimitResetCredit/consume`, the call Codex's own reset makes; the
+    /// backend picks the credit. `executable` only exists so tests can use a fake app-server.
+    static func consumeCodexReset(profileDirectory: String, executable: URL? = nil) async throws -> LimitResetOutcome {
+        guard let codex = executable ?? CommandRunner.locate("codex") else {
+            throw AISwitchError.cliNotFound(.codex)
+        }
+        // One logical attempt. If its answer is lost, the user retries after seeing
+        // the refreshed count, which is a new attempt.
+        let consume = #"{"id":2,"method":"account/rateLimitResetCredit/consume","params":{"idempotencyKey":"\#(UUID().uuidString)"}}"#
+        return try await CommandRunner.interact(
+            executable: codex,
+            arguments: ["app-server", "--stdio"],
+            environment: ["CODEX_HOME": profileDirectory],
+            timeout: 30
+        ) { session in
+            try session.send(codexInitialize)
+            for await line in session.lines {
+                guard let data = line.data(using: .utf8),
+                      let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+                else { continue }
+                switch object["id"] as? Int {
+                case 1:
+                    try session.send(codexInitialized)
+                    try session.send(consume)
+                case 2:
+                    if let failure = object["error"] as? [String: Any] {
+                        throw AISwitchError.invalidResponse(failure["message"] as? String ?? line)
+                    }
+                    switch (object["result"] as? [String: Any])?["outcome"] as? String {
+                    case "reset": return .reset
+                    case "nothingToReset": return .nothingToReset
+                    case "noCredit": return .noneLeft
+                    case "alreadyRedeemed": return .alreadyUsed
+                    default: throw AISwitchError.invalidResponse("Codex answered the reset in a way AI Switch doesn't recognize.")
+                    }
+                default:
+                    continue
+                }
+            }
+            throw AISwitchError.invalidResponse("Codex did not answer the reset request.")
         }
     }
 
@@ -108,7 +163,24 @@ enum UsageService {
             ?? (windows.count == 1 && (windows[0].duration ?? 0) > 360 ? windows[0].window : nil)
 
         let note: String? = windows.isEmpty ? "Codex did not report a rolling limit for this account." : nil
-        return UsageSnapshot(session: session, weekly: weekly, fetchedAt: now, note: note)
+        return UsageSnapshot(session: session, weekly: weekly, fetchedAt: now, note: note,
+                             resets: (result["rateLimitResetCredits"] as? [String: Any]).flatMap(parseResetCredits))
+    }
+
+    /// `rateLimitResetCredits`: how many resets are available, and the credits Codex
+    /// listed, soonest to expire first, as Codex's own reset picker orders them.
+    private static func parseResetCredits(_ summary: [String: Any]) -> LimitResets? {
+        guard let available = number(summary["availableCount"]) else { return nil }
+        let credits = ((summary["credits"] as? [[String: Any]]) ?? [])
+            .filter { $0["status"] as? String == "available" }
+            .map { credit in
+                LimitResets.Credit(
+                    title: (credit["title"] as? String).flatMap { $0.trimmingCharacters(in: .whitespaces).isEmpty ? nil : $0 },
+                    expiresAt: number(credit["expiresAt"]).map { Date(timeIntervalSince1970: $0) }
+                )
+            }
+            .sorted { ($0.expiresAt ?? .distantFuture) < ($1.expiresAt ?? .distantFuture) }
+        return LimitResets(available: max(0, Int(available)), credits: credits)
     }
 
     static func inspectClaude(profileDirectory: String) async throws -> ProviderInspection {

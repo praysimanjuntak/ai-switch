@@ -17,6 +17,7 @@ struct AccountRowView: View {
     let renew: () -> Void
     let rename: (String) -> Void
     let remove: () -> Void
+    let useReset: () async throws -> LimitResetOutcome
 
     @State private var isHovered = false
     @State private var confirmsRemoval = false
@@ -86,6 +87,11 @@ struct AccountRowView: View {
                         .lineLimit(1)
                         .truncationMode(.middle)
                         .help(profile.subtitle)
+                }
+                if let resets = profile.usage?.resets {
+                    LimitResetsButton(accountName: profile.displayName, provider: profile.provider,
+                                      resets: resets, use: useReset)
+                        .padding(.top, 2)
                 }
             }
         }

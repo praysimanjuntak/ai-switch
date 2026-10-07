@@ -94,6 +94,11 @@ private struct MenuProviderCard: View {
                         .truncationMode(.middle)
                 }
                 Spacer(minLength: 6)
+                if let profile, let resets = profile.usage?.resets {
+                    LimitResetsButton(accountName: profile.displayName, provider: provider, resets: resets) {
+                        try await store.useReset(profile.id)
+                    }
+                }
                 if let profile {
                     FreshnessLabel(fetchedAt: profile.usage?.fetchedAt).font(.system(size: 10.5))
                 }
