@@ -187,10 +187,11 @@ func cancelledRefreshKeepsCachedState() async throws {
 func failedRefreshReportsIssue() async throws {
     let fixture = try RefreshFixture()
     defer { try? fixture.remove() }
+    let failure = AISwitchError.invalidResponse("Claude usage refresh failed (HTTP 500).")
     let store = AccountStore(supportDirectory: fixture.directory, startsAutomatically: false,
-                             inspect: { _ in throw AISwitchError.claudeSessionExpired })
+                             inspect: { _ in throw failure }, renew: { _, _ in Issue.record("Only an expired sign-in is renewed") })
     await store.refreshAll()
-    #expect(store.profiles.first?.authIssue == AISwitchError.claudeSessionExpired.localizedDescription)
+    #expect(store.profiles.first?.authIssue == failure.localizedDescription)
     #expect(store.profiles.first?.usage?.session?.usedPercent == 12)
     let reopened = AccountStore(supportDirectory: fixture.directory, startsAutomatically: false,
                                 inspect: { _ in ProviderInspection() })

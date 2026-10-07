@@ -280,7 +280,7 @@ struct RootView: View {
                 }
             }
             Spacer()
-            Text(store.isRefreshing ? "Checking usage…" : "Codex usage is live; all accounts are checked every 5 minutes")
+            Text(store.isRefreshing ? "Checking usage…" : "Codex usage is live; all accounts are checked every minute")
             Label("Credentials stay on this Mac", systemImage: "lock")
                 .labelStyle(.titleAndIcon)
         }

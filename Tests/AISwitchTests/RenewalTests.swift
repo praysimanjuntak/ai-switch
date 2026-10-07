@@ -202,6 +202,81 @@ func renewalKeepsCredentialTheCLIChangedMeanwhile() async throws {
     #expect(store.profiles.first?.authIssue == nil)
 }
 
+// MARK: Automatic renewal
+
+/// A Claude account whose sign-in has expired until `renew` runs, plus a count of renewals.
+private actor ExpiringSignIn {
+    private(set) var renewals = 0
+    private var renewed = false
+    private let renewalWorks: Bool
+
+    init(renewalWorks: Bool = true) { self.renewalWorks = renewalWorks }
+
+    func renew() throws {
+        renewals += 1
+        guard renewalWorks else { throw AISwitchError.commandFailed("Not logged in. Please run /login.") }
+        renewed = true
+    }
+
+    func inspect() throws -> ProviderInspection {
+        guard renewed else { throw AISwitchError.claudeSessionExpired }
+        return renewedUsage
+    }
+}
+
+@Test("An expired Claude sign-in is renewed on its own and its usage read")
+@MainActor
+func expiredSignInRenewsAutomatically() async throws {
+    let fixture = try RefreshFixture()
+    defer { try? fixture.remove() }
+    let account = ExpiringSignIn()
+    let store = AccountStore(supportDirectory: fixture.directory, startsAutomatically: false,
+                             inspect: { _ in try await account.inspect() }, renew: { _, _ in try await account.renew() },
+                             claudeCodeRunning: { false })
+    await store.refreshAll()
+    #expect(await account.renewals == 1)
+    #expect(store.profiles.first?.authIssue == nil)
+    #expect(store.profiles.first?.usage?.session?.usedPercent == 25)
+    #expect(!store.isRefreshing)
+}
+
+@Test("A failed automatic renewal says so and isn't retried every minute; Renew sign-in still tries")
+@MainActor
+func failedAutomaticRenewalIsReported() async throws {
+    let fixture = try RefreshFixture()
+    defer { try? fixture.remove() }
+    let account = ExpiringSignIn(renewalWorks: false)
+    let store = AccountStore(supportDirectory: fixture.directory, startsAutomatically: false,
+                             inspect: { _ in try await account.inspect() }, renew: { _, _ in try await account.renew() },
+                             claudeCodeRunning: { false })
+    await store.refresh(fixture.profile.id)
+    #expect(store.profiles.first?.authIssue == "Unable to renew sign-in: Not logged in. Please run /login.")
+    #expect(store.profiles.first?.usage?.session?.usedPercent == 12)
+    await store.refresh(fixture.profile.id)
+    await store.refreshAll()
+    #expect(await account.renewals == 1)
+    #expect(store.profiles.first?.authIssue?.hasPrefix("Unable to renew sign-in") == true)
+    await store.renew(fixture.profile.id)
+    #expect(await account.renewals == 2)
+}
+
+@Test("While Claude Code runs, it renews the active account itself; AI Switch doesn't race it")
+@MainActor
+func activeAccountIsLeftToRunningClaudeCode() async throws {
+    let fixture = try RefreshFixture(active: true)
+    defer { try? fixture.remove() }
+    try writeCredential("mine", of: fixture.profile)
+    let account = ExpiringSignIn()
+    let live = LiveClaudeStub("mine")
+    let store = AccountStore(supportDirectory: fixture.directory, startsAutomatically: false,
+                             inspect: { _ in try await account.inspect() }, renew: { _, _ in try await account.renew() },
+                             liveClaude: await live.credential, claudeCodeRunning: { true })
+    await store.refresh(fixture.profile.id)
+    #expect(await account.renewals == 0)
+    #expect(store.profiles.first?.authIssue?.contains("Claude Code is running") == true)
+    #expect(await live.writes.isEmpty)
+}
+
 // MARK: CLI seam
 
 private struct FakeCLI {

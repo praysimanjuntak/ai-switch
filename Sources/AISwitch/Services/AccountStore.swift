@@ -58,6 +58,9 @@ final class AccountStore: ObservableObject {
     private var ompReconcileTail: Task<Void, Never>?
     /// Accounts whose provider is limiting usage checks, and when to try again.
     private var usageBackoff: [UUID: (retryAt: Date, delay: TimeInterval)] = [:]
+    /// Accounts whose automatic renewal failed: the message shown, and when to try again.
+    private var autoRenewFailures: [UUID: (retryAt: Date, message: String)] = [:]
+    private let isClaudeCodeRunning: @Sendable () async -> Bool
     /// Optional self-hosted sync server that lets a phone read usage. Every
     /// persisted change is pushed, coalesced by the sync's debounce.
     let sync: RemoteSync
@@ -83,6 +86,11 @@ final class AccountStore: ObservableObject {
             try await UsageService.useLimitReset(provider: $0, directory: $1)
         },
         liveClaude: LiveClaudeCredential = .system,
+        claudeCodeRunning: @escaping @Sendable () async -> Bool = {
+            let result = try? await CommandRunner.run(executable: URL(fileURLWithPath: "/usr/bin/pgrep"),
+                                                      arguments: ["-x", "claude"], timeout: 5)
+            return result?.exitCode == 0
+        },
         codexSessions: URL? = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".codex/sessions", isDirectory: true),
         omp: OmpBridge = .system,
@@ -96,6 +104,7 @@ final class AccountStore: ObservableObject {
         self.identify = identify
         self.resetLimits = resetLimits
         self.liveClaude = liveClaude
+        isClaudeCodeRunning = claudeCodeRunning
         codexFeed = codexSessions.map { CodexSessionFeed(root: $0) }
         self.omp = omp
         ompStateURL = support.appendingPathComponent("omp.json")
@@ -375,14 +384,44 @@ final class AccountStore: ObservableObject {
     }
 
     func refresh(_ id: UUID) async {
-        await check(id, renewing: false)
+        guard await check(id, renewal: nil) == .signInExpired else { return }
+        await renewExpiredSignIn(id)
     }
 
-    /// Asks the CLI to renew the account's credential, then re-reads usage.
-    /// Nothing renews automatically: the CLI session this starts may spend a
-    /// small amount of the account's quota.
+    /// Asks the CLI to renew the account's credential, then re-reads usage. The
+    /// CLI session this starts may spend a small amount of the account's quota.
     func renew(_ id: UUID) async {
-        await check(id, renewing: true)
+        autoRenewFailures[id] = nil
+        await check(id, renewal: .manual)
+    }
+
+    /// A Claude sign-in expires about eight hours after Claude Code last used it.
+    /// An expired one is renewed the way Renew sign-in does it, with one
+    /// tool-less Claude Code message. A failed attempt is reported and not
+    /// repeated for an hour. The active account is left to Claude Code while it
+    /// runs: two renewals of one sign-in at once can sign Claude Code out.
+    private func renewExpiredSignIn(_ id: UUID) async {
+        guard let profile = profiles.first(where: { $0.id == id }), profile.provider == .claude else { return }
+        if let failure = autoRenewFailures[id], failure.retryAt > Date() {
+            setIssue(failure.message, on: id)
+            return
+        }
+        if isActive(profile), await isClaudeCodeRunning() {
+            setIssue("Claude Code is running with this account and renews its sign-in when it's next used.", on: id)
+            return
+        }
+        if await check(id, renewal: .automatic) == .renewalFailed,
+           let message = profiles.first(where: { $0.id == id })?.authIssue {
+            autoRenewFailures[id] = (Date().addingTimeInterval(3600), message)
+        } else {
+            autoRenewFailures[id] = nil
+        }
+    }
+
+    private func setIssue(_ message: String, on id: UUID) {
+        guard let index = profiles.firstIndex(where: { $0.id == id }), profiles[index].authIssue != message else { return }
+        profiles[index].authIssue = message
+        save()
     }
 
     /// Spends one of the account's usage limit resets, then re-reads its usage.
@@ -406,11 +445,27 @@ final class AccountStore: ObservableObject {
         return outcome
     }
 
-    private func check(_ id: UUID, renewing: Bool) async {
-        guard let profile = profiles.first(where: { $0.id == id }) else { return }
-        guard !Task.isCancelled, !refreshingProfileIDs.contains(id) else { return }
+    private enum Renewal { case manual, automatic }
+
+    private enum CheckOutcome {
+        /// Usage was read.
+        case checked
+        /// Claude reports the sign-in as expired; the caller renews it or says why not.
+        case signInExpired
+        /// An automatic renewal failed, or left a sign-in Claude still reports as expired.
+        case renewalFailed
+        /// Skipped, cancelled, or failed for another reason, already reported on the account.
+        case other
+    }
+
+    @discardableResult
+    private func check(_ id: UUID, renewal: Renewal?) async -> CheckOutcome {
+        guard let profile = profiles.first(where: { $0.id == id }) else { return .other }
+        guard !Task.isCancelled, !refreshingProfileIDs.contains(id) else { return .other }
         refreshingProfileIDs.insert(id)
         defer { refreshingProfileIDs.remove(id) }
+        let renewing = renewal != nil
+        var renewed = false
         do {
             // The live credential the profile was brought up to date with. Only
             // while it is still live may the profile's credential replace it.
@@ -424,10 +479,11 @@ final class AccountStore: ObservableObject {
                 // Refresh tokens rotate, so the renewed credential must replace
                 // the live one before the CLI's next session.
                 if let current = live { live = try await publishCredential(of: profile, replacing: current) }
+                renewed = true
             }
             // A provider that is limiting usage checks gets fewer of them; a
             // renewal still checks, since it starts from a new token.
-            if !renewing, let backoff = usageBackoff[id], backoff.retryAt > Date() { return }
+            if !renewing, let backoff = usageBackoff[id], backoff.retryAt > Date() { return .other }
             let inspection = try await inspectProfile(profile)
             try Task.checkCancellation()
             if profile.provider == .codex, let current = live {
@@ -438,7 +494,7 @@ final class AccountStore: ObservableObject {
             // once its credential is known to work.
             let knowsIdentity = profiles.first(where: { $0.id == id })?.identity != nil
             let learned = knowsIdentity ? nil : await knownIdentity(of: profile)
-            guard let index = profiles.firstIndex(where: { $0.id == id }) else { return }
+            guard let index = profiles.firstIndex(where: { $0.id == id }) else { return .other }
             apply(inspection, to: &profiles[index])
             if let learned, profiles[index].identity == nil {
                 profiles[index].identity = learned
@@ -447,20 +503,27 @@ final class AccountStore: ObservableObject {
             profiles[index].authIssue = nil
             usageBackoff[id] = nil
             save()
+            return .checked
         } catch is CancellationError {
-            return
+            return .other
         } catch AISwitchError.usageRateLimited(let provider) {
             // Checking again on schedule would keep the limit exhausted, so each
             // refusal doubles the wait, up to an hour.
             let delay = min((usageBackoff[id]?.delay ?? 450) * 2, 3600)
             usageBackoff[id] = (Date().addingTimeInterval(delay), delay)
-            guard let index = profiles.firstIndex(where: { $0.id == id }) else { return }
-            profiles[index].authIssue = AISwitchError.usageRateLimited(provider).localizedDescription
-            save()
+            setIssue(AISwitchError.usageRateLimited(provider).localizedDescription, on: id)
+            return .other
         } catch {
-            guard let index = profiles.firstIndex(where: { $0.id == id }) else { return }
-            profiles[index].authIssue = error.localizedDescription
-            save()
+            var expired = false
+            if case AISwitchError.claudeSessionExpired = error { expired = true }
+            if expired, !renewing { return .signInExpired }
+            if renewal == .automatic, !renewed || expired {
+                let reason = renewed ? "Claude still reports it as expired. Sign in again with Add account." : error.localizedDescription
+                setIssue("Unable to renew sign-in: \(reason)", on: id)
+                return .renewalFailed
+            }
+            setIssue(error.localizedDescription, on: id)
+            return .other
         }
     }
 
@@ -534,7 +597,8 @@ final class AccountStore: ObservableObject {
         refreshTask = Task { [weak self] in
             await self?.refreshAll()
             while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(300))
+                // Codex usage also arrives live from its session logs; see scheduleCodexFeed.
+                try? await Task.sleep(for: .seconds(60))
                 guard !Task.isCancelled else { break }
                 await self?.refreshAll()
             }
@@ -542,7 +606,7 @@ final class AccountStore: ObservableObject {
     }
 
     /// Usage Codex records after each turn on this Mac shows up within seconds.
-    /// Provider checks stay at five minutes: their usage endpoints are rate-limited.
+    /// Provider checks run every minute; one Anthropic refuses backs off on its own.
     private func scheduleCodexFeed() {
         codexFeedTask = Task { [weak self] in
             while !Task.isCancelled {
