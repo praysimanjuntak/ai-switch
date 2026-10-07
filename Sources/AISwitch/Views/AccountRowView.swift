@@ -8,6 +8,15 @@ enum AccountColumns {
 }
 
 struct AccountRowView: View {
+    /// What omp does with this account while "Switch omp too" is on.
+    enum OmpState {
+        case none
+        /// omp prefers this account for new sessions.
+        case preferred
+        /// The CLI uses this account, but omp can't: it isn't signed in to omp.
+        case notSignedIn
+    }
+
     let profile: AccountProfile
     let isActive: Bool
     let isSwitching: Bool
@@ -18,6 +27,7 @@ struct AccountRowView: View {
     let rename: (String) -> Void
     let remove: () -> Void
     let useReset: () async throws -> LimitResetOutcome
+    var omp: OmpState = .none
 
     @State private var isHovered = false
     @State private var confirmsRemoval = false
@@ -91,6 +101,17 @@ struct AccountRowView: View {
                     }
                     FreshnessLabel(fetchedAt: profile.usage?.fetchedAt, labelled: true)
                         .font(.system(size: 11))
+                    switch omp {
+                    case .preferred:
+                        OmpBadge().fixedSize()
+                    case .notSignedIn:
+                        Text("Not in omp")
+                            .font(.system(size: 11))
+                            .foregroundStyle(AppPalette.tertiaryInk)
+                            .help("omp keeps choosing its own account: sign \(profile.displayName) in to omp with /login so omp can use it.")
+                    case .none:
+                        EmptyView()
+                    }
                 }
                 .padding(.top, 2)
             }

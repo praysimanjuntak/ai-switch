@@ -122,8 +122,22 @@ struct RootView: View {
             .background(AppPalette.fill)
             .clipShape(RoundedRectangle(cornerRadius: 10))
             Spacer()
+            if store.ompAvailable { ompToggle }
             searchField
         }
+    }
+
+    private var ompToggle: some View {
+        Toggle(isOn: Binding(get: { store.ompFollow }, set: { follow in Task { await store.setOmpFollow(follow) } })) {
+            Text("Switch omp too")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(AppPalette.secondaryInk)
+        }
+        .toggleStyle(.switch)
+        .controlSize(.mini)
+        .padding(.trailing, 6)
+        .help("Switching an account also makes omp prefer it for new omp sessions. omp still falls back to its other "
+              + "accounts when this one runs low. An account has to be signed in to omp (/login in omp) to be used there.")
     }
 
     private func filterPill(_ value: ProviderFilter, title: String, count: Int) -> some View {
@@ -225,7 +239,9 @@ struct RootView: View {
             renew: { Task { await store.renew(profile.id) } },
             rename: { store.rename(profile.id, to: $0) },
             remove: { Task { await store.remove(profile.id) } },
-            useReset: { try await store.useReset(profile.id) }
+            useReset: { try await store.useReset(profile.id) },
+            omp: store.ompPreferredProfileIDs.contains(profile.id) ? .preferred
+                : store.ompMissingProfileIDs.contains(profile.id) ? .notSignedIn : .none
         )
     }
 

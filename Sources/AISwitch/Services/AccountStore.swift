@@ -27,6 +27,14 @@ final class AccountStore: ObservableObject {
     @Published private var refreshingAll = false
     @Published var switchingProfileID: UUID?
     @Published var errorMessage: String?
+    /// omp is installed, so "Switch omp too" is offered.
+    @Published private(set) var ompAvailable = false
+    /// "Switch omp too": omp prefers the account each CLI uses.
+    @Published private(set) var ompFollow = false
+    /// Profiles omp currently prefers because of AI Switch.
+    @Published private(set) var ompPreferredProfileIDs: Set<UUID> = []
+    /// Active profiles omp can't follow because they aren't signed in to omp.
+    @Published private(set) var ompMissingProfileIDs: Set<UUID> = []
 
     private let manager = FileManager.default
     private let stateURL: URL
@@ -41,6 +49,13 @@ final class AccountStore: ObservableObject {
     private let resetLimits: @Sendable (AIProvider, URL) async throws -> LimitResetOutcome
     private let liveClaude: LiveClaudeCredential
     private let codexFeed: CodexSessionFeed?
+    private let omp: OmpBridge
+    private let ompStateURL: URL
+    /// The `auth.accountPolicies` rules AI Switch wrote, by provider, so the
+    /// user's own rules are never touched.
+    private var ompManaged: [String: OmpAccountPolicy] = [:]
+    /// The last queued omp reconcile; each one runs after the ones before it.
+    private var ompReconcileTail: Task<Void, Never>?
     /// Accounts whose provider is limiting usage checks, and when to try again.
     private var usageBackoff: [UUID: (retryAt: Date, delay: TimeInterval)] = [:]
     /// Optional self-hosted sync server that lets a phone read usage. Every
@@ -70,6 +85,7 @@ final class AccountStore: ObservableObject {
         liveClaude: LiveClaudeCredential = .system,
         codexSessions: URL? = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".codex/sessions", isDirectory: true),
+        omp: OmpBridge = .system,
         sync: RemoteSync? = nil
     ) {
         let support = supportDirectory ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -81,11 +97,14 @@ final class AccountStore: ObservableObject {
         self.resetLimits = resetLimits
         self.liveClaude = liveClaude
         codexFeed = codexSessions.map { CodexSessionFeed(root: $0) }
+        self.omp = omp
+        ompStateURL = support.appendingPathComponent("omp.json")
         self.sync = sync ?? RemoteSync(directory: support)
         stateURL = support.appendingPathComponent("profiles.json")
         profilesRoot = support.appendingPathComponent("Profiles", isDirectory: true)
         backupsRoot = support.appendingPathComponent("Backups", isDirectory: true)
         load()
+        loadOmpState()
         guard startsAutomatically else { return }
         scheduleRefresh()
         scheduleCodexFeed()
@@ -240,6 +259,106 @@ final class AccountStore: ObservableObject {
         activeProfileIDs[profiles[index].provider.rawValue] = id
         profiles[index].lastActivatedAt = Date()
         save()
+        scheduleOmpReconcile()
+    }
+
+    // MARK: omp
+
+    /// Turns "Switch omp too" on or off. On, omp prefers the account each CLI
+    /// uses; off, AI Switch's rules are removed and omp chooses for itself again.
+    func setOmpFollow(_ follow: Bool) async {
+        ompFollow = follow
+        saveOmpState()
+        await reconcileOmp()
+    }
+
+    /// Brings omp's `auth.accountPolicies` in line with the CLIs' active accounts
+    /// while following, and removes AI Switch's rules otherwise. A rule whose
+    /// account left omp is removed as well: omp fails every request for a
+    /// provider whose rule matches no signed-in account.
+    func reconcileOmp() async {
+        guard ompAvailable else { return }
+        let previous = ompReconcileTail
+        let pass = Task { [weak self] in
+            await previous?.value
+            await self?.reconcileOmpOnce()
+        }
+        ompReconcileTail = pass
+        await pass.value
+    }
+
+    private func scheduleOmpReconcile() {
+        guard ompAvailable, ompFollow || !ompManaged.isEmpty else { return }
+        Task { [weak self] in await self?.reconcileOmp() }
+    }
+
+    private func reconcileOmpOnce() async {
+        guard ompFollow || !ompManaged.isEmpty else {
+            ompPreferredProfileIDs = []
+            ompMissingProfileIDs = []
+            return
+        }
+        guard let accounts = try? await omp.accounts() else { return }
+        var targets: [AIProvider: OmpAccount] = [:]
+        var preferred: Set<UUID> = []
+        var missing: Set<UUID> = []
+        if ompFollow {
+            for provider in AIProvider.allCases {
+                guard let profile = activeProfile(for: provider) else { continue }
+                if let account = OmpAccount.matching(profile, in: accounts) {
+                    targets[provider] = account
+                    preferred.insert(profile.id)
+                } else {
+                    missing.insert(profile.id)
+                }
+            }
+        }
+        ompMissingProfileIDs = missing
+        let managed = Dictionary(uniqueKeysWithValues: ompManaged.compactMap { key, rule in
+            AIProvider(rawValue: key).map { ($0, rule) }
+        })
+        // Up to date only when AI Switch's rules prefer exactly the accounts wanted now.
+        let upToDate = managed.count == targets.count && managed.allSatisfy { provider, rule in
+            targets[provider].map { rule == .preferring($0, priority: rule.priority ?? 0) } ?? false
+        }
+        guard !upToDate else {
+            ompPreferredProfileIDs = preferred
+            return
+        }
+        do {
+            let plan = OmpPolicies.plan(existing: try await omp.readPolicies(), managed: managed, targets: targets)
+            try await omp.writePolicies(plan.policies)
+            ompManaged = Dictionary(uniqueKeysWithValues: plan.managed.map { ($0.key.rawValue, $0.value) })
+            saveOmpState()
+            let conflicted = Set(plan.conflicts)
+            ompPreferredProfileIDs = preferred.filter { id in
+                profiles.first { $0.id == id }.map { !conflicted.contains($0.provider) } ?? false
+            }
+            if let provider = plan.conflicts.first {
+                errorMessage = "omp already has an account policy for the \(provider.displayName) account. "
+                    + "AI Switch leaves omp's choice to that policy (auth.accountPolicies in omp's config)."
+            }
+        } catch {
+            errorMessage = "Couldn't update omp's account: \(error.localizedDescription)"
+        }
+    }
+
+    private struct OmpState: Codable {
+        var follow: Bool
+        var managed: [String: OmpAccountPolicy]
+    }
+
+    private func loadOmpState() {
+        ompAvailable = omp.isAvailable()
+        guard let data = try? Data(contentsOf: ompStateURL),
+              let state = try? JSONDecoder().decode(OmpState.self, from: data) else { return }
+        ompFollow = state.follow
+        ompManaged = state.managed
+    }
+
+    private func saveOmpState() {
+        let state = OmpState(follow: ompFollow, managed: ompManaged)
+        try? JSONEncoder().encode(state).write(to: ompStateURL, options: .atomic)
     }
 
     /// Checks every account at once. Each provider check is a separate child
@@ -362,6 +481,7 @@ final class AccountStore: ObservableObject {
         profiles.removeAll { $0.id == id }
         if isActive(profile) { activeProfileIDs.removeValue(forKey: profile.provider.rawValue) }
         save()
+        scheduleOmpReconcile()
         if profile.provider == .claude {
             // Versions before 0.3 kept the profile itself in the Keychain, and an
             // interrupted CLI login can leave its item behind too.
@@ -427,6 +547,8 @@ final class AccountStore: ObservableObject {
         codexFeedTask = Task { [weak self] in
             while !Task.isCancelled {
                 await self?.pollCodexSessions()
+                // Catches accounts that left omp, whose rules omp would reject.
+                if let self, self.ompFollow || !self.ompManaged.isEmpty { await self.reconcileOmp() }
                 try? await Task.sleep(for: .seconds(5))
             }
         }
@@ -608,6 +730,7 @@ final class AccountStore: ObservableObject {
         } else {
             activeProfileIDs.removeValue(forKey: profile.provider.rawValue)
             save()
+            scheduleOmpReconcile()
             errorMessage = "\(profile.provider.displayName) is now signed in to \(identity.email ?? "another account"), "
                 + "which isn't saved in AI Switch. Use Import to add it; \(profile.displayName) keeps its own saved sign-in."
         }

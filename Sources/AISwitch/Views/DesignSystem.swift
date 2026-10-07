@@ -227,6 +227,23 @@ struct ActiveBadge: View {
     }
 }
 
+/// The account omp prefers for new sessions, because "Switch omp too" is on.
+struct OmpBadge: View {
+    var body: some View {
+        HStack(spacing: 3) {
+            Image(systemName: "terminal").font(.system(size: 8.5, weight: .semibold))
+            Text("omp")
+        }
+        .font(.system(size: 10.5, weight: .medium))
+        .foregroundStyle(AppPalette.ink)
+        .padding(.horizontal, 6)
+        .padding(.vertical, 2)
+        .background(AppPalette.fill)
+        .clipShape(RoundedRectangle(cornerRadius: 5))
+        .help("omp prefers this account for new sessions")
+    }
+}
+
 /// One limit: what is left, how full it is, and when it resets.
 struct UsageMeter: View {
     enum Layout {

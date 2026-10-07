@@ -46,6 +46,14 @@ shasum -a 256 -c AI-Switch-0.5.1-macOS-universal-beta.dmg.sha256
 - Filter by provider, search names and email addresses, and rename accounts from their actions menu.
 - Use Command-F to search, Command-N to add an account, and Command-R to refresh usage.
 
+### Switch omp too
+
+If [omp](https://omp.sh) is installed, a **Switch omp too** toggle appears next to the search field (0.6.0 and later). While it's on, the account you switch to for a CLI also becomes the one omp prefers for new omp sessions. The row shows an **omp** tag on the account omp prefers.
+
+omp keeps its own sign-ins, and AI Switch never reads or copies omp's tokens. Instead it adds one per-account rule to omp's `auth.accountPolicies` setting with `omp config set`, giving that account the highest `priority`. omp still falls back to its other accounts when the preferred one runs low, and a running omp session keeps its account while it's in use. Your own `auth.accountPolicies` rules are kept as they are; if one of them already targets the account, AI Switch leaves omp's choice to it.
+
+An account has to be signed in to omp (`/login` in omp) for omp to use it; otherwise the row says **Not in omp** and omp keeps choosing its own account. AI Switch matches accounts by email and organization or workspace, reading only omp's account list (`identity_key`), never the credentials. If omp drops the preferred account (a logout or a failed refresh), AI Switch removes its rule within seconds, since omp rejects every request for a provider whose rule matches no signed-in account. Turning the toggle off removes AI Switch's rules.
+
 ### How Claude Code credentials are handled
 
 Claude Code keeps the credential for new sessions in the login Keychain (item `Claude Code-credentials`), falling back to `~/.claude/.credentials.json` when the Keychain refuses a write. AI Switch reads and writes that live item with `/usr/bin/security`, the same tool Claude Code uses, so macOS never shows the per-app authorization dialog that Security framework access from a third-party app would trigger. Saved profiles never touch the Keychain: each one is a `0600` file inside its own profile directory. When you switch, the outgoing account's current credential (including any token Claude Code refreshed) is saved back into its profile before the incoming profile is written live, and refreshes of the active account keep its profile file in sync.
