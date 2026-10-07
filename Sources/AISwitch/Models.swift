@@ -69,6 +69,23 @@ struct UsageSnapshot: Codable, Equatable, Sendable {
     )
 }
 
+/// Who a credential signs in as. Only a credential of the same account may
+/// replace a profile's saved one.
+struct AccountIdentity: Codable, Equatable, Sendable {
+    /// Claude account UUID, or ChatGPT user ID.
+    var user: String
+    /// Claude organization UUID, or ChatGPT account (workspace) ID, when reported.
+    var organization: String?
+    /// For messages only; never compared.
+    var email: String?
+
+    /// Mirrors Claude Code's own check: the same user, and the same organization
+    /// whenever both sides report one.
+    func isSameAccount(as other: AccountIdentity) -> Bool {
+        user == other.user && (organization == nil || other.organization == nil || organization == other.organization)
+    }
+}
+
 struct AccountProfile: Codable, Identifiable, Equatable, Sendable {
     let id: UUID
     let provider: AIProvider
@@ -80,6 +97,9 @@ struct AccountProfile: Codable, Identifiable, Equatable, Sendable {
     var lastActivatedAt: Date?
     var usage: UsageSnapshot?
     var authIssue: String?
+    /// Who the saved credential signs in as, once known. Claude credentials
+    /// don't say, so it is kept here rather than looked up every time.
+    var identity: AccountIdentity?
 
     var subtitle: String {
         if let email, !email.isEmpty { return email }

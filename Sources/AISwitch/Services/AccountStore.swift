@@ -1,15 +1,21 @@
 import Combine
 import Foundation
 
-/// The credential Claude Code reads for new sessions. Injected so tests never
-/// touch the login Keychain.
+/// Claude Code's credentials outside the profile files: the live one new
+/// sessions read, and the Keychain items earlier versions kept per profile.
+/// Injected so tests never touch the login Keychain.
 struct LiveClaudeCredential: Sendable {
     var read: @Sendable () async throws -> Data?
     var write: @Sendable (Data) async throws -> Void
+    /// Deletes the Keychain item Claude Code keys by a profile's directory.
+    var deleteProfileItem: @Sendable (String) async -> Void
 
     static let system = LiveClaudeCredential(
         read: { try await ClaudeCredentialStore.readLive() },
-        write: { try await ClaudeCredentialStore.writeLive($0) }
+        write: { try await ClaudeCredentialStore.writeLive($0) },
+        deleteProfileItem: {
+            await ClaudeCredentialStore.deleteKeychain(service: ClaudeCredentialStore.service(configDirectory: $0))
+        }
     )
 }
 
@@ -30,6 +36,7 @@ final class AccountStore: ObservableObject {
     private let loginProfile: @Sendable (AIProvider, URL) async throws -> Void
     private let inspectProfile: @Sendable (AccountProfile) async throws -> ProviderInspection
     private let renewProfile: @Sendable (AIProvider, URL) async throws -> Void
+    private let identify: @Sendable (AIProvider, Data) async -> AccountIdentity?
     private let liveClaude: LiveClaudeCredential
     /// Optional self-hosted sync server that lets a phone read usage. Every
     /// persisted change is pushed, coalesced by the sync's debounce.
@@ -49,6 +56,9 @@ final class AccountStore: ObservableObject {
         renew: @escaping @Sendable (AIProvider, URL) async throws -> Void = {
             try await AccountLoginService.renew(provider: $0, directory: $1)
         },
+        identify: @escaping @Sendable (AIProvider, Data) async -> AccountIdentity? = {
+            await CredentialIdentity.identify($0, credential: $1)
+        },
         liveClaude: LiveClaudeCredential = .system,
         sync: RemoteSync? = nil
     ) {
@@ -57,6 +67,7 @@ final class AccountStore: ObservableObject {
         inspectProfile = inspect
         loginProfile = login
         renewProfile = renew
+        self.identify = identify
         self.liveClaude = liveClaude
         self.sync = sync ?? RemoteSync(directory: support)
         stateURL = support.appendingPathComponent("profiles.json")
@@ -124,30 +135,33 @@ final class AccountStore: ObservableObject {
         try secureCreateDirectory(directory)
 
         do {
+            let credential: Data
             switch provider {
             case .codex:
-                let authData: Data
                 if manager.fileExists(atPath: liveCodexCredential.path) {
-                    authData = try Data(contentsOf: liveCodexCredential)
+                    credential = try Data(contentsOf: liveCodexCredential)
                 } else if let keyring = try await SecurityTool.read(service: "Codex Auth", account: nil) {
-                    authData = keyring
+                    credential = keyring
                 } else {
                     throw AISwitchError.notSignedIn(.codex)
                 }
                 let config = directory.appendingPathComponent("config.toml")
                 try Data("cli_auth_credentials_store = \"file\"\n".utf8).write(to: config, options: .atomic)
-                try manager.writeOwnerOnly(authData, to: directory.appendingPathComponent("auth.json"))
+                try manager.writeOwnerOnly(credential, to: directory.appendingPathComponent("auth.json"))
             case .claude:
                 guard let data = try await liveClaude.read() else {
                     throw AISwitchError.notSignedIn(.claude)
                 }
+                credential = data
                 try manager.writeOwnerOnly(data, to: ClaudeCredentialStore.credentialURL(configDirectory: directory))
             }
 
             var profile = newProfile(id: id, provider: provider, directory: directory)
-            if provider == .claude {
-                let config = ClaudeCredentialStore.liveConfigDirectory.appendingPathComponent(".claude.json")
-                apply(UsageService.claudeMetadata(configData: try? Data(contentsOf: config)), to: &profile)
+            // `~/.claude.json` can still name the previous account after a
+            // switch, so the credential's own account is looked up instead.
+            if let identity = await identify(provider, credential) {
+                profile.identity = identity
+                apply(ProviderInspection(email: identity.email), to: &profile)
             }
             if let inspection = try? await inspectProfile(profile) {
                 apply(inspection, to: &profile)
@@ -188,28 +202,23 @@ final class AccountStore: ObservableObject {
     }
 
     /// Makes `profile` the account new CLI sessions use. The credential that was
-    /// live until now is saved back into its own profile first, so a token the
-    /// CLI refreshed meanwhile is not lost.
+    /// live until now is saved back into the outgoing profile first, so a token
+    /// the CLI refreshed meanwhile is not lost.
     private func switchCredentials(to profile: AccountProfile) async throws {
         switchingProfileID = profile.id
         defer { switchingProfileID = nil }
-        let previous = activeProfile(for: profile.provider)
-
-        switch profile.provider {
-        case .codex:
-            let source = URL(fileURLWithPath: profile.profileDirectory).appendingPathComponent("auth.json")
-            guard manager.fileExists(atPath: source.path) else {
-                throw AISwitchError.credentialsMissing(.codex)
-            }
-            if let previous { try? syncLiveCodexCredential(to: previous) }
+        guard manager.fileExists(atPath: credentialURL(of: profile).path) else {
+            throw AISwitchError.credentialsMissing(profile.provider)
+        }
+        if let previous = activeProfile(for: profile.provider) {
+            await keepLiveCredential(for: previous)
+        }
+        if profile.provider == .codex {
             try CodexConfigEditor.ensureFileCredentialStore()
             try backupCurrentCodexCredential()
-            try manager.writeOwnerOnly(Data(contentsOf: source), to: liveCodexCredential)
-        case .claude:
-            let data = try ClaudeCredentialStore.readProfile(directory: profile.profileDirectory)
-            if let previous { try? await syncLiveClaudeCredential(to: previous) }
-            try await liveClaude.write(data)
         }
+        // Read after the outgoing credential was kept, in case it is this profile's.
+        try await writeLiveCredential(savedCredential(of: profile), for: profile.provider)
     }
 
     private func markActive(_ id: UUID) {
@@ -249,28 +258,35 @@ final class AccountStore: ObservableObject {
         refreshingProfileIDs.insert(id)
         defer { refreshingProfileIDs.remove(id) }
         do {
+            // The live credential the profile was brought up to date with. Only
+            // while it is still live may the profile's credential replace it.
+            var live: Data?
             if isActive(profile) {
-                // The CLI may have refreshed its token since the last check.
-                switch profile.provider {
-                case .codex: try? syncLiveCodexCredential(to: profile)
-                case .claude: try? await syncLiveClaudeCredential(to: profile)
-                }
+                live = await adoptLiveCredential(into: profile, renewing: renewing)
             }
             if renewing {
                 try await renewProfile(profile.provider, URL(fileURLWithPath: profile.profileDirectory))
                 try Task.checkCancellation()
                 // Refresh tokens rotate, so the renewed credential must replace
                 // the live one before the CLI's next session.
-                if isActive(profile) { try await writeProfileCredentialLive(profile) }
+                if let current = live { live = try await publishCredential(of: profile, replacing: current) }
             }
             let inspection = try await inspectProfile(profile)
             try Task.checkCancellation()
-            if profile.provider == .codex, isActive(profile) {
+            if profile.provider == .codex, let current = live {
                 // The app-server check can refresh the profile's token in place.
-                try? await writeProfileCredentialLive(profile)
+                _ = try? await publishCredential(of: profile, replacing: current)
             }
+            // A profile saved before identities were recorded learns its own
+            // once its credential is known to work.
+            let knowsIdentity = profiles.first(where: { $0.id == id })?.identity != nil
+            let learned = knowsIdentity ? nil : await knownIdentity(of: profile)
             guard let index = profiles.firstIndex(where: { $0.id == id }) else { return }
             apply(inspection, to: &profiles[index])
+            if let learned, profiles[index].identity == nil {
+                profiles[index].identity = learned
+                if profiles[index].email == nil { apply(ProviderInspection(email: learned.email), to: &profiles[index]) }
+            }
             profiles[index].authIssue = nil
             save()
         } catch is CancellationError {
@@ -302,9 +318,7 @@ final class AccountStore: ObservableObject {
         if profile.provider == .claude {
             // Versions before 0.3 kept the profile itself in the Keychain, and an
             // interrupted CLI login can leave its item behind too.
-            await ClaudeCredentialStore.deleteKeychain(
-                service: ClaudeCredentialStore.service(configDirectory: profile.profileDirectory)
-            )
+            await liveClaude.deleteProfileItem(profile.profileDirectory)
         }
     }
 
@@ -408,28 +422,166 @@ final class AccountStore: ObservableObject {
         try manager.writeOwnerOnly(Data(contentsOf: liveCodexCredential), to: destination)
     }
 
-    private func syncLiveCodexCredential(to profile: AccountProfile) throws {
-        guard manager.fileExists(atPath: liveCodexCredential.path) else { return }
-        let destination = URL(fileURLWithPath: profile.profileDirectory).appendingPathComponent("auth.json")
-        try manager.writeOwnerOnly(Data(contentsOf: liveCodexCredential), to: destination)
+    /// What the live credential is to a profile.
+    private enum LiveCredential {
+        /// The CLI is signed out.
+        case none
+        /// Identical to the profile's saved credential.
+        case saved(Data)
+        /// The profile's own account with a newer token. `identity` is set when
+        /// it was looked up, so a profile that didn't know its own can record it.
+        case newer(Data, identity: AccountIdentity?)
+        /// Another account's.
+        case foreign(Data, identity: AccountIdentity)
+        /// Changed, but whose it is can't be checked right now: a Claude token
+        /// that already expired, or no network.
+        case unverified(Data)
     }
 
-    private func syncLiveClaudeCredential(to profile: AccountProfile) async throws {
-        guard let data = try await liveClaude.read() else { return }
-        let destination = ClaudeCredentialStore.credentialURL(configDirectory: URL(fileURLWithPath: profile.profileDirectory))
-        try manager.writeOwnerOnly(data, to: destination)
-    }
-
-    /// Makes the profile's saved credential the one new CLI sessions use.
-    private func writeProfileCredentialLive(_ profile: AccountProfile) async throws {
-        switch profile.provider {
-        case .codex:
-            let source = URL(fileURLWithPath: profile.profileDirectory).appendingPathComponent("auth.json")
-            guard manager.fileExists(atPath: source.path) else { return }
-            try manager.writeOwnerOnly(Data(contentsOf: source), to: liveCodexCredential)
-        case .claude:
-            try await liveClaude.write(ClaudeCredentialStore.readProfile(directory: profile.profileDirectory))
+    /// Compares the live credential with the one saved in `profile`.
+    private func liveCredential(for profile: AccountProfile) async -> LiveCredential {
+        guard let live = try? await readLiveCredential(profile.provider) else { return .none }
+        let saved = try? savedCredential(of: profile)
+        if live == saved { return .saved(live) }
+        if profile.provider == .claude, let saved, let token = ClaudeCredentialStore.refreshToken(from: live),
+           token == ClaudeCredentialStore.refreshToken(from: saved) {
+            // The same sign-in: only the access token or MCP sign-ins changed.
+            return .newer(live, identity: nil)
         }
+        guard let identity = await identify(profile.provider, live) else { return .unverified(live) }
+        guard let own = await knownIdentity(of: profile) else {
+            // Saved before identities were recorded: it held whatever was live.
+            return .newer(live, identity: identity)
+        }
+        return own.isSameAccount(as: identity) ? .newer(live, identity: identity) : .foreign(live, identity: identity)
+    }
+
+    /// Who the profile's saved credential signs in as: recorded, or else the
+    /// account Claude Code noted when it signed in there, or else asked.
+    private func knownIdentity(of profile: AccountProfile) async -> AccountIdentity? {
+        if let identity = profiles.first(where: { $0.id == profile.id })?.identity ?? profile.identity {
+            return identity
+        }
+        if profile.provider == .claude,
+           let identity = CredentialIdentity.claudeConfig(directory: URL(fileURLWithPath: profile.profileDirectory)) {
+            return identity
+        }
+        guard let saved = try? savedCredential(of: profile) else { return nil }
+        return await identify(profile.provider, saved)
+    }
+
+    /// Brings the active profile up to date with the live credential, which the
+    /// CLI may have refreshed since the last check, and returns that credential.
+    /// Returns nil and leaves the profile as it was when the CLI is signed out,
+    /// signed in to another account (the profile then stops being active), or
+    /// when whose credential it is can't be checked right now. A renewal adopts
+    /// the latter anyway, since it has to start from the newest token.
+    private func adoptLiveCredential(into profile: AccountProfile, renewing: Bool) async -> Data? {
+        switch await liveCredential(for: profile) {
+        case .none:
+            return nil
+        case .saved(let data):
+            return data
+        case .newer(let data, let identity):
+            do { try writeCredential(data, into: profile, identity: identity) } catch { return nil }
+            return data
+        case .unverified(let data):
+            guard renewing else { return nil }
+            do { try writeCredential(data, into: profile, identity: nil) } catch { return nil }
+            return data
+        case .foreign(let data, let identity):
+            await release(profile, toAccount: identity, credential: data)
+            return nil
+        }
+    }
+
+    /// Before the live credential is replaced, saves it into the outgoing profile
+    /// so a token the CLI refreshed is not lost. Another account's credential is
+    /// never saved there; one whose owner can't be checked right now is, since
+    /// losing a refreshed token is the likelier harm.
+    private func keepLiveCredential(for profile: AccountProfile) async {
+        switch await liveCredential(for: profile) {
+        case .newer(let data, let identity): try? writeCredential(data, into: profile, identity: identity)
+        case .unverified(let data): try? writeCredential(data, into: profile, identity: nil)
+        case .none, .saved, .foreign: break
+        }
+    }
+
+    /// The CLI signed in to another account outside AI Switch. `profile` keeps
+    /// its own saved credential and stops being active; if that account is saved
+    /// here too, its profile takes the live credential and becomes active.
+    private func release(_ profile: AccountProfile, toAccount identity: AccountIdentity, credential: Data) async {
+        var owner: AccountProfile?
+        for candidate in profiles where candidate.provider == profile.provider && candidate.id != profile.id {
+            if let known = await knownIdentity(of: candidate), known.isSameAccount(as: identity) {
+                owner = candidate
+                break
+            }
+        }
+        // A switch may have happened while identities were looked up.
+        guard isActive(profile) else { return }
+        if let owner {
+            try? writeCredential(credential, into: owner, identity: identity)
+            markActive(owner.id)
+        } else {
+            activeProfileIDs.removeValue(forKey: profile.provider.rawValue)
+            save()
+            errorMessage = "\(profile.provider.displayName) is now signed in to \(identity.email ?? "another account"), "
+                + "which isn't saved in AI Switch. Use Import to add it; \(profile.displayName) keeps its own saved sign-in."
+        }
+    }
+
+    /// Makes the profile's credential live after the CLI renewed it in the
+    /// profile folder, unless the live credential changed since `expected` was
+    /// adopted: the CLI then holds something newer, which the next check adopts.
+    /// Returns what is live afterwards, or nil when it was left alone.
+    private func publishCredential(of profile: AccountProfile, replacing expected: Data) async throws -> Data? {
+        let saved = try savedCredential(of: profile)
+        guard saved != expected else { return expected }
+        guard try await readLiveCredential(profile.provider) == expected else { return nil }
+        try await writeLiveCredential(saved, for: profile.provider)
+        return saved
+    }
+
+    /// Saves `credential` into the profile, recording whose it is when the profile
+    /// didn't know yet; the next `save()` persists that.
+    private func writeCredential(_ credential: Data, into profile: AccountProfile, identity: AccountIdentity?) throws {
+        try manager.writeOwnerOnly(credential, to: credentialURL(of: profile))
+        guard let identity, let index = profiles.firstIndex(where: { $0.id == profile.id }),
+              profiles[index].identity == nil else { return }
+        profiles[index].identity = identity
+    }
+
+    /// The credential new CLI sessions use, or nil when the CLI is signed out.
+    private func readLiveCredential(_ provider: AIProvider) async throws -> Data? {
+        switch provider {
+        case .codex:
+            guard manager.fileExists(atPath: liveCodexCredential.path) else { return nil }
+            return try Data(contentsOf: liveCodexCredential)
+        case .claude:
+            return try await liveClaude.read()
+        }
+    }
+
+    private func writeLiveCredential(_ credential: Data, for provider: AIProvider) async throws {
+        switch provider {
+        case .codex: try manager.writeOwnerOnly(credential, to: liveCodexCredential)
+        case .claude: try await liveClaude.write(credential)
+        }
+    }
+
+    private func credentialURL(of profile: AccountProfile) -> URL {
+        let directory = URL(fileURLWithPath: profile.profileDirectory)
+        switch profile.provider {
+        case .codex: return directory.appendingPathComponent("auth.json")
+        case .claude: return ClaudeCredentialStore.credentialURL(configDirectory: directory)
+        }
+    }
+
+    private func savedCredential(of profile: AccountProfile) throws -> Data {
+        let url = credentialURL(of: profile)
+        guard manager.fileExists(atPath: url.path) else { throw AISwitchError.credentialsMissing(profile.provider) }
+        return try Data(contentsOf: url)
     }
 
     private func apply(_ inspection: ProviderInspection, to profile: inout AccountProfile) {

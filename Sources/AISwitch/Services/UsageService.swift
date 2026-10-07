@@ -158,6 +158,30 @@ enum UsageService {
         return parseClaudeUsage(payload, now: now)
     }
 
+    /// The account and organization an OAuth token belongs to, from the profile
+    /// endpoint Claude Code uses to tell whose a refreshed credential is.
+    static func fetchClaudeIdentity(accessToken: String) async throws -> AccountIdentity {
+        guard let url = URL(string: "https://api.anthropic.com/api/oauth/profile") else {
+            throw AISwitchError.invalidResponse("Claude profile URL is invalid.")
+        }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 10
+        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("ai-switch/\(AppInfo.version)", forHTTPHeaderField: "User-Agent")
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        let status = (response as? HTTPURLResponse)?.statusCode ?? -1
+        guard (200..<300).contains(status),
+              let payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let account = payload["account"] as? [String: Any],
+              let user = account["uuid"] as? String else {
+            throw AISwitchError.invalidResponse("Claude did not say which account this sign-in belongs to (HTTP \(status)).")
+        }
+        let organization = payload["organization"] as? [String: Any]
+        return AccountIdentity(user: user, organization: organization?["uuid"] as? String, email: account["email"] as? String)
+    }
+
     /// `five_hour` and `seven_day` are the account-wide windows. `limits[]` adds
     /// per-model weekly buckets (`kind: "weekly_scoped"`, e.g. "Fable").
     static func parseClaudeUsage(_ payload: [String: Any], now: Date = Date()) -> UsageSnapshot {

@@ -55,11 +55,6 @@ private actor SuspendedInspection {
     }
 }
 
-private func writeCredential(_ text: String, of profile: AccountProfile) throws {
-    try FileManager.default.writeOwnerOnly(Data(text.utf8), to: ClaudeCredentialStore.credentialURL(
-        configDirectory: URL(fileURLWithPath: profile.profileDirectory)))
-}
-
 private let renewedUsage = ProviderInspection(
     usage: UsageSnapshot(session: UsageWindow(usedPercent: 25, resetsAt: nil), weekly: nil, fetchedAt: Date(), note: nil)
 )
@@ -183,6 +178,28 @@ func cancelledRenewalKeepsCachedState() async throws {
     #expect(store.profiles.first?.usage?.session?.usedPercent == 12)
     #expect(await live.writes.isEmpty)
     #expect(!store.isRefreshing)
+}
+
+@Test("A renewal never replaces a live credential the CLI changed while it ran")
+@MainActor
+func renewalKeepsCredentialTheCLIChangedMeanwhile() async throws {
+    let fixture = try RefreshFixture(active: true)
+    defer { try? fixture.remove() }
+    try writeCredential("mine", of: fixture.profile)
+    let live = LiveClaudeStub("mine")
+    let store = AccountStore(
+        supportDirectory: fixture.directory, startsAutomatically: false,
+        inspect: { _ in renewedUsage },
+        renew: { _, _ in
+            try writeCredential("renewed", of: fixture.profile)
+            await live.cliStores("refreshed-by-running-session")
+        },
+        liveClaude: await live.credential
+    )
+    await store.renew(fixture.profile.id)
+    #expect(await live.stored == Data("refreshed-by-running-session".utf8))
+    #expect(await live.writes.isEmpty)
+    #expect(store.profiles.first?.authIssue == nil)
 }
 
 // MARK: CLI seam

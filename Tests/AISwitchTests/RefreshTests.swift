@@ -43,13 +43,33 @@ actor LiveClaudeStub {
     init(_ initial: String?) { stored = initial.map { Data($0.utf8) } }
 
     var credential: LiveClaudeCredential {
-        LiveClaudeCredential(read: { await self.stored }, write: { await self.write($0) })
+        LiveClaudeCredential(read: { await self.stored }, write: { await self.write($0) }, deleteProfileItem: { _ in })
+    }
+
+    /// Claude Code changes its own credential: it refreshed it, or signed in again.
+    func cliStores(_ text: String) {
+        stored = Data(text.utf8)
     }
 
     private func write(_ data: Data) {
         stored = data
         writes.append(data)
     }
+}
+
+/// Stands in for `CredentialIdentity.identify`: test credentials are plain text,
+/// and `owners` names the user each one belongs to.
+func identities(_ owners: [String: String]) -> @Sendable (AIProvider, Data) async -> AccountIdentity? {
+    { _, credential in
+        owners[String(decoding: credential, as: UTF8.self)].map {
+            AccountIdentity(user: $0, organization: nil, email: "\($0)@example.com")
+        }
+    }
+}
+
+func writeCredential(_ text: String, of profile: AccountProfile) throws {
+    try FileManager.default.writeOwnerOnly(Data(text.utf8), to: ClaudeCredentialStore.credentialURL(
+        configDirectory: URL(fileURLWithPath: profile.profileDirectory)))
 }
 
 func savedCredential(of profile: AccountProfile) -> String? {
@@ -179,19 +199,79 @@ func failedRefreshReportsIssue() async throws {
     #expect(reopened.profiles.first?.authIssue == nil)
 }
 
-@Test("Refreshing the active Claude account saves the CLI's current credential before inspecting it")
+@Test("Refreshing the active Claude account saves the CLI's refreshed credential before inspecting it")
 @MainActor
 func activeClaudeRefreshSyncsLiveCredential() async throws {
     let fixture = try RefreshFixture(active: true)
     defer { try? fixture.remove() }
+    try writeCredential("saved", of: fixture.profile)
     let live = LiveClaudeStub("refreshed-by-cli")
     let store = AccountStore(supportDirectory: fixture.directory, startsAutomatically: false, inspect: { profile in
         #expect(savedCredential(of: profile) == "refreshed-by-cli")
         return ProviderInspection()
-    }, liveClaude: await live.credential)
+    }, identify: identities(["saved": "me", "refreshed-by-cli": "me"]), liveClaude: await live.credential)
     await store.refresh(fixture.profile.id)
     #expect(savedCredential(of: fixture.profile) == "refreshed-by-cli")
+    #expect(store.activeProfileIDs["claude"] == fixture.profile.id)
     #expect(await live.writes.isEmpty)
+}
+
+@Test("Refreshing never saves another account's live credential over the active account")
+@MainActor
+func refreshKeepsActiveAccountWhenCLISignedInElsewhere() async throws {
+    let fixture = try RefreshFixture(active: true)
+    defer { try? fixture.remove() }
+    try writeCredential("mine", of: fixture.profile)
+    let live = LiveClaudeStub("someone-else")
+    let store = AccountStore(supportDirectory: fixture.directory, startsAutomatically: false,
+                             inspect: { _ in ProviderInspection() },
+                             identify: identities(["mine": "me", "someone-else": "other"]),
+                             liveClaude: await live.credential)
+    await store.refresh(fixture.profile.id)
+    #expect(savedCredential(of: fixture.profile) == "mine")
+    // The CLI no longer uses this account, and the account it uses isn't saved.
+    #expect(store.activeProfileIDs["claude"] == nil)
+    #expect(store.profiles.first?.authIssue == nil)
+    #expect(await live.writes.isEmpty)
+    let reopened = AccountStore(supportDirectory: fixture.directory, startsAutomatically: false)
+    #expect(reopened.activeProfileIDs["claude"] == nil)
+}
+
+@Test("When the CLI signs in to another saved account, that account becomes active with the CLI's credential")
+@MainActor
+func refreshFollowsCLIToAnotherSavedAccount() async throws {
+    let fixture = try RefreshFixture(active: true)
+    defer { try? fixture.remove() }
+    let other = RefreshFixture.claudeProfile(named: "Other", directory: fixture.directory.appendingPathComponent("other"))
+    try fixture.save([fixture.profile, other], active: ["claude": fixture.profile.id])
+    try writeCredential("mine", of: fixture.profile)
+    try writeCredential("other-old", of: other)
+    let live = LiveClaudeStub("other-new")
+    let store = AccountStore(supportDirectory: fixture.directory, startsAutomatically: false,
+                             inspect: { _ in ProviderInspection() },
+                             identify: identities(["mine": "me", "other-old": "other", "other-new": "other"]),
+                             liveClaude: await live.credential)
+    await store.refresh(fixture.profile.id)
+    #expect(store.activeProfileIDs["claude"] == other.id)
+    #expect(savedCredential(of: other) == "other-new")
+    #expect(savedCredential(of: fixture.profile) == "mine")
+    #expect(await live.writes.isEmpty)
+}
+
+@Test("A changed credential whose account can't be checked is left out of the active profile until it can be")
+@MainActor
+func unverifiableLiveCredentialWaitsForNextRefresh() async throws {
+    let fixture = try RefreshFixture(active: true)
+    defer { try? fixture.remove() }
+    try writeCredential("mine", of: fixture.profile)
+    let live = LiveClaudeStub("expired-unknown")
+    let store = AccountStore(supportDirectory: fixture.directory, startsAutomatically: false,
+                             inspect: { _ in ProviderInspection() },
+                             identify: identities(["mine": "me"]),
+                             liveClaude: await live.credential)
+    await store.refresh(fixture.profile.id)
+    #expect(savedCredential(of: fixture.profile) == "mine")
+    #expect(store.activeProfileIDs["claude"] == fixture.profile.id)
 }
 
 @Test("Switching Claude accounts keeps the outgoing account's refreshed credential and makes the new one live")
@@ -267,6 +347,26 @@ func importCopiesLiveClaudeCredential() async throws {
     let permissions = try FileManager.default.attributesOfItem(atPath: url.path)[.posixPermissions] as? Int
     #expect(permissions == 0o600)
     #expect(await live.writes.isEmpty)
+}
+
+@Test("Importing the account the CLI signed in to leaves the previously active account's credential alone")
+@MainActor
+func importKeepsPreviouslyActiveCredential() async throws {
+    let fixture = try RefreshFixture(active: true)
+    defer { try? fixture.remove() }
+    try writeCredential("mine", of: fixture.profile)
+    let live = LiveClaudeStub("someone-else")
+    let store = AccountStore(supportDirectory: fixture.directory, startsAutomatically: false,
+                             inspect: { _ in ProviderInspection() },
+                             identify: identities(["mine": "me", "someone-else": "other"]),
+                             liveClaude: await live.credential)
+    try await store.importCurrent(provider: .claude)
+    let imported = try #require(store.profiles.first { $0.id != fixture.profile.id })
+    #expect(store.activeProfileIDs["claude"] == imported.id)
+    #expect(savedCredential(of: imported) == "someone-else")
+    #expect(savedCredential(of: fixture.profile) == "mine")
+    // The credential names no account, so the import asked whose it is.
+    #expect(imported.email == "other@example.com")
 }
 
 @Test("Removing the active account forgets it here without touching the CLI's live sign-in")

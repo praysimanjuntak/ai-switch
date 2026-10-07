@@ -107,6 +107,13 @@ enum ClaudeCredentialStore {
         return token
     }
 
+    /// Stays the same until Claude Code rotates it, so two credentials sharing
+    /// it are the same sign-in.
+    static func refreshToken(from data: Data) -> String? {
+        let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        return (root?["claudeAiOauth"] as? [String: Any])?["refreshToken"] as? String
+    }
+
     // MARK: Keychain items, keyed the way Claude Code keys them
 
     static func readKeychain(service: String) async throws -> Data? {

@@ -49,6 +49,8 @@ shasum -a 256 -c AI-Switch-0.3.0-macOS-universal-beta.dmg.sha256
 
 Claude Code keeps the credential for new sessions in the login Keychain (item `Claude Code-credentials`), falling back to `~/.claude/.credentials.json` when the Keychain refuses a write. AI Switch reads and writes that live item with `/usr/bin/security`, the same tool Claude Code uses, so macOS never shows the per-app authorization dialog that Security framework access from a third-party app would trigger. Saved profiles never touch the Keychain: each one is a `0600` file inside its own profile directory. When you switch, the outgoing account's current credential (including any token Claude Code refreshed) is saved back into its profile before the incoming profile is written live, and refreshes of the active account keep its profile file in sync.
 
+A live credential is only ever saved into the profile of the account it belongs to, for Codex and Claude Code alike. Codex tokens name their user and ChatGPT account. A Claude credential doesn't, so AI Switch uses the account Claude Code recorded in the profile's own `.claude.json`, or asks Anthropic's profile endpoint, the way Claude Code itself checks whose a refreshed credential is. If a CLI was signed in to another account outside AI Switch (`codex login`, Claude Code's `/login`), the active account's saved sign-in is left untouched and it is no longer marked active. If the new account is already saved, that one becomes active instead; otherwise use **Import** to add it. While a changed credential can't be checked (an expired Claude token, or no network), refreshes leave the profile alone; switching away or **Renew sign-in** keeps the CLI's newer token.
+
 An access token that has passed its expiry is reported as needing renewal rather than as a sign-out. **Renew sign-in** starts one tool-less print-mode Claude Code session (`claude -p --tools ""`) inside the profile's own config directory, so Claude Code renews the token with its own client and AI Switch folds the result back into the profile file; this spends one small message of that account's quota. For Codex it asks the Codex app-server to refresh the token. AI Switch never calls an OAuth token endpoint itself, and nothing is renewed without your click. Starting a CLI session with the account active still works as before; refresh afterwards.
 
 **Upgrading from 0.2.x:** earlier versions stored Claude profiles as Keychain items. The active Claude account migrates itself on the first refresh. Any other saved Claude account shows **Attention** with a message asking you to remove and re-add it; removing it also deletes the old Keychain item.
@@ -116,14 +118,14 @@ Profile metadata is stored at `~/Library/Application Support/AI Switch/profiles.
 Setup:
 
 1. Deploy: `zsh Scripts/deploy-server.sh <ssh-host>` builds the Docker image, starts it on the host's `shared_ingress` network, adds a Caddy site block (`aiswitch.<ip>.nip.io` by default; pass a domain as the second argument), and prints the server address and push secret. Any host that can run `bun run src/server.ts` behind HTTPS works; `AISWITCH_PUSH_SECRET` and `AISWITCH_PUBLIC_ORIGIN` are the only required settings.
-2. On the Mac, open **Phone** in the toolbar, enter the address and push secret, and choose **Connect and push**. The Mac then pushes after every usage refresh and account change. The connection is stored owner-only at `~/Library/Application Support/AI Switch/sync.json`.
+2. On the Mac, open **Phone** in the toolbar, enter the address and push secret, and choose **Connect and push**. The address must use https; plain http is only accepted for a server on this Mac, since pushes carry access tokens. The Mac then pushes after every usage refresh and account change. The connection is stored owner-only at `~/Library/Application Support/AI Switch/sync.json`.
 3. Choose **Show QR code** and scan it with your phone's camera. Each code is a separate read-only pairing; **Unpair all phones** revokes them. The pairing token travels in the URL fragment, which browsers never send to the server.
 
 Run the server's tests with `cd Server && bun test`.
 
 ## Current integration boundary
 
-Codex app-server is marked experimental, and Claude's OAuth usage path is not a public third-party API. Both are isolated behind `UsageService`, fail without changing the active account, and can be updated independently if a provider changes its CLI contract.
+Codex app-server is marked experimental, and Claude's OAuth usage and profile paths are not public third-party APIs. Both are isolated behind `UsageService`, fail without changing the active account, and can be updated independently if a provider changes its CLI contract.
 
 ## Feedback
 

@@ -66,9 +66,12 @@ final class RemoteSync: ObservableObject {
 
     func configure(serverURL: URL, pushSecret: String) throws {
         let secret = pushSecret.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Pushes carry the push secret and access tokens, so plain http is only
+        // accepted for a server on this Mac.
         guard var components = URLComponents(url: serverURL, resolvingAgainstBaseURL: false),
-              let scheme = components.scheme?.lowercased(), ["https", "http"].contains(scheme), components.host != nil else {
-            throw AISwitchError.invalidResponse("Enter the sync server address as https://host.")
+              let scheme = components.scheme?.lowercased(), let host = components.host?.lowercased(),
+              scheme == "https" || (scheme == "http" && ["localhost", "127.0.0.1", "[::1]"].contains(host)) else {
+            throw AISwitchError.invalidResponse("Enter the sync server address as https://host. Plain http only works for a server on this Mac.")
         }
         guard secret.count >= 16 else {
             throw AISwitchError.invalidResponse("The push secret must be at least 16 characters.")
@@ -98,8 +101,8 @@ final class RemoteSync: ObservableObject {
     }
 
     /// Coalesces bursts of state changes (a refresh-all touches every account)
-    /// into one push. Credentials are read from the profile directories at push
-    /// time so the server always gets the tokens the CLIs currently hold.
+    /// into one push. Credentials are read from the profile directories as each
+    /// change is scheduled, so the push carries the tokens of the latest change.
     func schedulePush(profiles: [AccountProfile], activeProfileIDs: [String: UUID]) {
         guard settings != nil else { return }
         queued = Self.payload(profiles: profiles, activeProfileIDs: activeProfileIDs)
@@ -199,7 +202,8 @@ final class RemoteSync: ObservableObject {
                   let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let tokens = root["tokens"] as? [String: Any],
                   let access = tokens["access_token"] as? String else { return nil }
-            return PushedAccount.Token(accessToken: access, accountId: tokens["account_id"] as? String, expiresAt: jwtExpiry(access))
+            let expiry = (CredentialIdentity.jwtClaims(access)?["exp"] as? NSNumber).map { Date(timeIntervalSince1970: $0.doubleValue) }
+            return PushedAccount.Token(accessToken: access, accountId: tokens["account_id"] as? String, expiresAt: expiry)
         case .claude:
             guard let data = try? Data(contentsOf: ClaudeCredentialStore.credentialURL(configDirectory: directory)),
                   let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -208,19 +212,6 @@ final class RemoteSync: ObservableObject {
             let expiry = (oauth["expiresAt"] as? NSNumber).map { Date(timeIntervalSince1970: $0.doubleValue / 1000) }
             return PushedAccount.Token(accessToken: access, accountId: nil, expiresAt: expiry)
         }
-    }
-
-    /// `exp` from an unverified JWT payload; the server only uses it to know when
-    /// to stop trying a token.
-    nonisolated static func jwtExpiry(_ token: String) -> Date? {
-        let parts = token.split(separator: ".")
-        guard parts.count == 3 else { return nil }
-        var segment = String(parts[1]).replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
-        segment += String(repeating: "=", count: (4 - segment.count % 4) % 4)
-        guard let data = Data(base64Encoded: segment),
-              let claims = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let exp = (claims["exp"] as? NSNumber)?.doubleValue else { return nil }
-        return Date(timeIntervalSince1970: exp)
     }
 
     static let urlSessionTransport: Transport = { request in

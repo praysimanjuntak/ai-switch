@@ -113,6 +113,22 @@ func serverErrorsAreReported() async throws {
     #expect(await probe.requests.last?.httpMethod == "POST")
 }
 
+@Test("The push secret and access tokens only go to an https server, or plain http on this Mac")
+@MainActor
+func syncRequiresHTTPS() throws {
+    let fixture = try RefreshFixture()
+    defer { try? fixture.remove() }
+    let probe = TransportProbe()
+    let sync = RemoteSync(directory: fixture.directory, transport: { await probe.record($0) })
+    #expect(throws: AISwitchError.self) {
+        try sync.configure(serverURL: URL(string: "http://sync.example")!, pushSecret: "secret-secret-secret")
+    }
+    #expect(!sync.isConfigured)
+    #expect(!FileManager.default.fileExists(atPath: fixture.directory.appendingPathComponent("sync.json").path))
+    try sync.configure(serverURL: URL(string: "http://localhost:8787")!, pushSecret: "secret-secret-secret")
+    #expect(sync.isConfigured)
+}
+
 private extension TransportProbe {
     func setStatus(_ value: Int) { status = value }
     func setBody(_ value: Data) { body = value }
