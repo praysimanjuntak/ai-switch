@@ -40,7 +40,7 @@ shasum -a 256 -c AI-Switch-0.3.0-macOS-universal-beta.dmg.sha256
 - Read Codex limits through the local Codex app-server protocol.
 - Read Claude Code's five-hour and seven-day limit data from the same authenticated usage surface used by the CLI.
 - Renew an account's expired sign-in with **Renew sign-in** (in the card's Attention popover, its actions menu, and the menu-bar panel). Nothing is renewed automatically.
-- Refresh automatically every five minutes and on demand.
+- See Codex usage live: Codex records its rate limits in its session logs after every turn, and AI Switch reads them within seconds, with no network request, attributing each one to the saved account that ran it. Every account is also checked every five minutes and on demand. Claude Code has no local feed, and Anthropic rate-limits its usage endpoint even at 30–60 second polling, so five minutes is the safe pace there; when Anthropic refuses a check, AI Switch waits longer before the next one (up to an hour) instead of retrying on schedule.
 - See local reset clock times on account cards and in the menu-bar panel; hover a meter for the full date, seconds, and time zone. Missing reset times are explicitly marked as not reported.
 - Filter by provider or active accounts, search names and email addresses, and rename accounts from their actions menu.
 - Use Command-F to search, Command-N to add an account, and Command-R to refresh usage.

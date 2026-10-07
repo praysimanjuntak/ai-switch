@@ -33,11 +33,15 @@ final class AccountStore: ObservableObject {
     private let profilesRoot: URL
     private let backupsRoot: URL
     private var refreshTask: Task<Void, Never>?
+    private var codexFeedTask: Task<Void, Never>?
     private let loginProfile: @Sendable (AIProvider, URL) async throws -> Void
     private let inspectProfile: @Sendable (AccountProfile) async throws -> ProviderInspection
     private let renewProfile: @Sendable (AIProvider, URL) async throws -> Void
     private let identify: @Sendable (AIProvider, Data) async -> AccountIdentity?
     private let liveClaude: LiveClaudeCredential
+    private let codexFeed: CodexSessionFeed?
+    /// Accounts whose provider is limiting usage checks, and when to try again.
+    private var usageBackoff: [UUID: (retryAt: Date, delay: TimeInterval)] = [:]
     /// Optional self-hosted sync server that lets a phone read usage. Every
     /// persisted change is pushed, coalesced by the sync's debounce.
     let sync: RemoteSync
@@ -60,6 +64,8 @@ final class AccountStore: ObservableObject {
             await CredentialIdentity.identify($0, credential: $1)
         },
         liveClaude: LiveClaudeCredential = .system,
+        codexSessions: URL? = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".codex/sessions", isDirectory: true),
         sync: RemoteSync? = nil
     ) {
         let support = supportDirectory ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -69,6 +75,7 @@ final class AccountStore: ObservableObject {
         renewProfile = renew
         self.identify = identify
         self.liveClaude = liveClaude
+        codexFeed = codexSessions.map { CodexSessionFeed(root: $0) }
         self.sync = sync ?? RemoteSync(directory: support)
         stateURL = support.appendingPathComponent("profiles.json")
         profilesRoot = support.appendingPathComponent("Profiles", isDirectory: true)
@@ -76,6 +83,7 @@ final class AccountStore: ObservableObject {
         load()
         guard startsAutomatically else { return }
         scheduleRefresh()
+        scheduleCodexFeed()
         Task { [weak self] in
             await self?.discoverExistingAccounts()
         }
@@ -83,6 +91,7 @@ final class AccountStore: ObservableObject {
 
     deinit {
         refreshTask?.cancel()
+        codexFeedTask?.cancel()
     }
 
     func isActive(_ profile: AccountProfile) -> Bool {
@@ -271,6 +280,9 @@ final class AccountStore: ObservableObject {
                 // the live one before the CLI's next session.
                 if let current = live { live = try await publishCredential(of: profile, replacing: current) }
             }
+            // A provider that is limiting usage checks gets fewer of them; a
+            // renewal still checks, since it starts from a new token.
+            if !renewing, let backoff = usageBackoff[id], backoff.retryAt > Date() { return }
             let inspection = try await inspectProfile(profile)
             try Task.checkCancellation()
             if profile.provider == .codex, let current = live {
@@ -288,9 +300,18 @@ final class AccountStore: ObservableObject {
                 if profiles[index].email == nil { apply(ProviderInspection(email: learned.email), to: &profiles[index]) }
             }
             profiles[index].authIssue = nil
+            usageBackoff[id] = nil
             save()
         } catch is CancellationError {
             return
+        } catch AISwitchError.usageRateLimited(let provider) {
+            // Checking again on schedule would keep the limit exhausted, so each
+            // refusal doubles the wait, up to an hour.
+            let delay = min((usageBackoff[id]?.delay ?? 450) * 2, 3600)
+            usageBackoff[id] = (Date().addingTimeInterval(delay), delay)
+            guard let index = profiles.firstIndex(where: { $0.id == id }) else { return }
+            profiles[index].authIssue = AISwitchError.usageRateLimited(provider).localizedDescription
+            save()
         } catch {
             guard let index = profiles.firstIndex(where: { $0.id == id }) else { return }
             profiles[index].authIssue = error.localizedDescription
@@ -372,6 +393,38 @@ final class AccountStore: ObservableObject {
                 await self?.refreshAll()
             }
         }
+    }
+
+    /// Usage Codex records after each turn on this Mac shows up within seconds.
+    /// Provider checks stay at five minutes: their usage endpoints are rate-limited.
+    private func scheduleCodexFeed() {
+        codexFeedTask = Task { [weak self] in
+            while !Task.isCancelled {
+                await self?.pollCodexSessions()
+                try? await Task.sleep(for: .seconds(5))
+            }
+        }
+    }
+
+    /// Applies the rate limits Codex recorded since the last poll to the saved
+    /// profile of the account each one belongs to.
+    func pollCodexSessions(now: Date = Date()) async {
+        guard let codexFeed else { return }
+        let snapshots = await codexFeed.poll(now: now)
+        var changed = false
+        for snapshot in snapshots {
+            for index in profiles.indices where profiles[index].provider == .codex {
+                let profile = profiles[index]
+                let identity = profile.identity
+                    ?? (try? savedCredential(of: profile)).flatMap { CredentialIdentity.codex(authData: $0) }
+                guard let identity, identity.isSameAccount(as: snapshot.identity),
+                      snapshot.usage.fetchedAt > profile.usage?.fetchedAt ?? .distantPast else { continue }
+                profiles[index].usage = snapshot.usage
+                profiles[index].plan = snapshot.plan ?? profile.plan
+                changed = true
+            }
+        }
+        if changed { save() }
     }
 
     private func newProfile(id: UUID, provider: AIProvider, directory: URL) -> AccountProfile {

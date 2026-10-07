@@ -145,8 +145,10 @@ enum UsageService {
         request.setValue("ai-switch/\(AppInfo.version)", forHTTPHeaderField: "User-Agent")
 
         let (data, response) = try await URLSession.shared.data(for: request)
-        if (response as? HTTPURLResponse)?.statusCode == 401 {
-            throw AISwitchError.claudeSessionExpired
+        switch (response as? HTTPURLResponse)?.statusCode {
+        case 401: throw AISwitchError.claudeSessionExpired
+        case 429: throw AISwitchError.usageRateLimited(.claude)
+        default: break
         }
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
             let code = (response as? HTTPURLResponse)?.statusCode ?? -1

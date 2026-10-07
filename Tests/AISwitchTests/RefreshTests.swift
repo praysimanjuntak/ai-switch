@@ -199,6 +199,33 @@ func failedRefreshReportsIssue() async throws {
     #expect(reopened.profiles.first?.authIssue == nil)
 }
 
+/// Counts usage checks and answers each one with a rate-limit refusal.
+private actor RateLimitedInspection {
+    private(set) var calls = 0
+
+    func inspect() throws -> ProviderInspection {
+        calls += 1
+        throw AISwitchError.usageRateLimited(.claude)
+    }
+}
+
+@Test("A rate-limited account isn't checked again until its wait is over, except by renewing")
+@MainActor
+func rateLimitedUsageBacksOff() async throws {
+    let fixture = try RefreshFixture()
+    defer { try? fixture.remove() }
+    let inspection = RateLimitedInspection()
+    let store = AccountStore(supportDirectory: fixture.directory, startsAutomatically: false,
+                             inspect: { _ in try await inspection.inspect() }, renew: { _, _ in })
+    await store.refresh(fixture.profile.id)
+    #expect(store.profiles.first?.authIssue == AISwitchError.usageRateLimited(.claude).localizedDescription)
+    #expect(store.profiles.first?.usage?.session?.usedPercent == 12)
+    await store.refreshAll()
+    #expect(await inspection.calls == 1)
+    await store.renew(fixture.profile.id)
+    #expect(await inspection.calls == 2)
+}
+
 @Test("Refreshing the active Claude account saves the CLI's refreshed credential before inspecting it")
 @MainActor
 func activeClaudeRefreshSyncsLiveCredential() async throws {

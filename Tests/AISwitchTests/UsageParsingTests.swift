@@ -53,16 +53,10 @@ func exhaustedCodexLimitKeepsReset() {
 
 @Test("Codex credentials are the same account only for the same user in the same ChatGPT account")
 func codexIdentityComesFromTokenClaims() throws {
-    func auth(user: String, account: String) -> Data {
-        let claims = #"{"email":"\#(user)@example.com","https://api.openai.com/auth":{"chatgpt_user_id":"\#(user)","chatgpt_account_id":"\#(account)"}}"#
-        let payload = Data(claims.utf8).base64EncodedString()
-            .replacingOccurrences(of: "=", with: "").replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_")
-        return Data(#"{"tokens":{"id_token":"e30.\#(payload).sig","account_id":"\#(account)"}}"#.utf8)
-    }
-    let personal = try #require(CredentialIdentity.codex(authData: auth(user: "user-1", account: "personal")))
-    let again = try #require(CredentialIdentity.codex(authData: auth(user: "user-1", account: "personal")))
-    let team = try #require(CredentialIdentity.codex(authData: auth(user: "user-1", account: "team")))
-    let colleague = try #require(CredentialIdentity.codex(authData: auth(user: "user-2", account: "personal")))
+    let personal = try #require(CredentialIdentity.codex(authData: codexAuth(user: "user-1", account: "personal")))
+    let again = try #require(CredentialIdentity.codex(authData: codexAuth(user: "user-1", account: "personal")))
+    let team = try #require(CredentialIdentity.codex(authData: codexAuth(user: "user-1", account: "team")))
+    let colleague = try #require(CredentialIdentity.codex(authData: codexAuth(user: "user-2", account: "personal")))
     #expect(personal.email == "user-1@example.com")
     #expect(personal.isSameAccount(as: again))
     #expect(!personal.isSameAccount(as: team))
