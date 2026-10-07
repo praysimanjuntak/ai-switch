@@ -66,7 +66,10 @@ enum AppPalette {
     static let ink = Color(white: 0.09)
     static let secondaryInk = Color(white: 0.43)
     static let tertiaryInk = Color(white: 0.63)
-    static let success = Color(red: 0.14, green: 0.62, blue: 0.37)
+    /// Active and Live labels: a muted green, dark enough for small text on white.
+    static let success = Color(red: 0.18, green: 0.49, blue: 0.34)
+    /// Bars with plenty left: a soft green, calmer than `success` on long bars.
+    static let plenty = Color(red: 0.36, green: 0.62, blue: 0.48)
     static let caution = Color(red: 0.92, green: 0.70, blue: 0.03)
     static let warning = Color(red: 0.86, green: 0.53, blue: 0.09)
     static let critical = Color(red: 0.87, green: 0.25, blue: 0.22)
@@ -75,7 +78,7 @@ enum AppPalette {
     static func meter(remaining: Double) -> Color {
         if remaining < 20 { return critical }
         if remaining < 50 { return caution }
-        return success
+        return plenty
     }
 }
 
