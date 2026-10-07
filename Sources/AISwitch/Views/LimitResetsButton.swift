@@ -1,7 +1,39 @@
 import SwiftUI
 
-/// An account's usage limit resets: how many are left, and using one. A reset
-/// is spent only after a second, explicit confirmation.
+/// The steps between the resets pill and spending a reset. A reset is spent only
+/// after two separate confirmations, and the final button stays disabled briefly
+/// after it appears, so neither a double-click nor a rushed click can spend one.
+enum ResetConfirmation: Equatable {
+    case idle
+    /// First confirmation: use a reset on this account?
+    case first
+    /// Final confirmation; it can't be accepted before `armingDelay` has passed.
+    case final(shownAt: Date)
+    case working
+    case finished(LimitResetOutcome)
+    case failed(String)
+
+    static let armingDelay: TimeInterval = 1.5
+
+    mutating func begin() {
+        if self == .idle { self = .first }
+    }
+
+    mutating func confirmFirst(at now: Date = Date()) {
+        if self == .first { self = .final(shownAt: now) }
+    }
+
+    mutating func cancel() {
+        self = .idle
+    }
+
+    func canSpend(at now: Date) -> Bool {
+        guard case .final(let shownAt) = self else { return false }
+        return now.timeIntervalSince(shownAt) >= Self.armingDelay
+    }
+}
+
+/// An account's usage limit resets: how many are left, and using one.
 struct LimitResetsButton: View {
     let accountName: String
     let provider: AIProvider
@@ -9,11 +41,11 @@ struct LimitResetsButton: View {
     let use: () async throws -> LimitResetOutcome
 
     @State private var showsPopover = false
-    @State private var phase: LimitResetsPanel.Phase = .idle
+    @State private var confirmation: ResetConfirmation = .idle
 
     var body: some View {
         Button {
-            phase = .idle
+            confirmation = .idle
             showsPopover = true
         } label: {
             HStack(spacing: 4) {
@@ -30,38 +62,39 @@ struct LimitResetsButton: View {
         .buttonStyle(.plain)
         .help("Usage limit resets left")
         .popover(isPresented: $showsPopover, arrowEdge: .bottom) {
-            LimitResetsPanel(accountName: accountName, provider: provider, resets: resets, phase: $phase, spend: spend)
+            LimitResetsPanel(accountName: accountName, provider: provider, resets: resets,
+                             confirmation: $confirmation, spend: spend)
+        }
+        .onChange(of: showsPopover) { _, shown in
+            // Closing the popover abandons a confirmation in progress.
+            if !shown, confirmation != .working { confirmation = .idle }
         }
     }
 
     private func spend() {
-        phase = .working
+        // Checked again at the moment of the click, not only by the button's state.
+        guard confirmation.canSpend(at: Date()) else { return }
+        confirmation = .working
         Task {
             do {
-                phase = .finished(try await use())
+                confirmation = .finished(try await use())
             } catch AISwitchError.commandTimedOut {
                 // The reset may have gone through; a new attempt must wait for the real count.
-                phase = .failed("Couldn't confirm the reset. Refresh this account to see how many are left.")
+                confirmation = .failed("Couldn't confirm the reset. Refresh this account to see how many are left.")
             } catch {
-                phase = .failed("Couldn't reset usage: \(error.localizedDescription)")
+                confirmation = .failed("Couldn't reset usage: \(error.localizedDescription)")
             }
         }
     }
 }
 
 /// What the resets pill opens: the credits left, soonest to expire first, and
-/// the two-step way to use one.
+/// the two confirmations that stand before using one.
 struct LimitResetsPanel: View {
-    enum Phase: Equatable {
-        case idle, confirming, working
-        case finished(LimitResetOutcome)
-        case failed(String)
-    }
-
     let accountName: String
     let provider: AIProvider
     let resets: LimitResets
-    @Binding var phase: Phase
+    @Binding var confirmation: ResetConfirmation
     let spend: () -> Void
 
     var body: some View {
@@ -102,21 +135,41 @@ struct LimitResetsPanel: View {
 
     @ViewBuilder
     private var footer: some View {
-        switch phase {
+        switch confirmation {
         case .idle:
-            Button("Use a reset") { phase = .confirming }
+            Button("Use a reset…") { confirmation.begin() }
                 .buttonStyle(AppButtonStyle(prominent: true))
                 .disabled(resets.available == 0)
-        case .confirming:
+        case .first:
             VStack(alignment: .leading, spacing: 10) {
-                Text("Use this reset? This can't be undone.")
+                Text("Use 1 of \(resets.available == 1 ? "your 1 reset" : "your \(resets.available) resets") on \(accountName)?")
                     .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(AppPalette.ink)
+                    .fixedSize(horizontal: false, vertical: true)
                 HStack(spacing: 8) {
-                    Button("Yes, use reset", action: spend)
-                        .buttonStyle(AppButtonStyle(prominent: true))
-                    Button("Cancel") { phase = .idle }
+                    Button("Cancel") { confirmation.cancel() }
                         .buttonStyle(AppButtonStyle())
+                        .keyboardShortcut(.cancelAction)
+                    Button("Continue…") { confirmation.confirmFirst() }
+                        .buttonStyle(AppButtonStyle(prominent: true))
+                }
+            }
+        case .final:
+            // The buttons swap sides, so a second click where Continue was lands on Cancel.
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Last check: reset \(accountName)'s \(provider.shortName) usage now? This can't be undone.")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(AppPalette.critical)
+                    .fixedSize(horizontal: false, vertical: true)
+                TimelineView(.periodic(from: .now, by: 0.25)) { context in
+                    HStack(spacing: 8) {
+                        Button("Yes, reset now", action: spend)
+                            .buttonStyle(AppButtonStyle(destructive: true))
+                            .disabled(!confirmation.canSpend(at: context.date))
+                        Button("Cancel") { confirmation.cancel() }
+                            .buttonStyle(AppButtonStyle())
+                            .keyboardShortcut(.cancelAction)
+                    }
                 }
             }
         case .working:

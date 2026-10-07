@@ -23,6 +23,27 @@ func parsesCodexResetCredits() throws {
     #expect(UsageService.parseCodexUsage(["rateLimits": [String: Any]()]).resets == nil)
 }
 
+@Test("A reset can only be spent after two confirmations, and not within moments of the second")
+func resetNeedsTwoConfirmations() {
+    let start = Date(timeIntervalSince1970: 1_000)
+    var flow = ResetConfirmation.idle
+    #expect(!flow.canSpend(at: start))
+    flow.confirmFirst(at: start) // Skipping the first confirmation does nothing.
+    #expect(flow == .idle)
+
+    flow.begin()
+    #expect(!flow.canSpend(at: start.addingTimeInterval(60)))
+    flow.confirmFirst(at: start)
+    // A double-click or a rushed click right after the final step appears can't spend.
+    #expect(!flow.canSpend(at: start.addingTimeInterval(0.3)))
+    #expect(!flow.canSpend(at: start.addingTimeInterval(ResetConfirmation.armingDelay - 0.01)))
+    #expect(flow.canSpend(at: start.addingTimeInterval(ResetConfirmation.armingDelay)))
+
+    flow.cancel()
+    #expect(!flow.canSpend(at: start.addingTimeInterval(60)))
+    #expect(flow == .idle)
+}
+
 /// A stand-in `codex app-server` that answers the reset request with `answer`.
 private func fakeResetServer(in directory: URL, answer: String) throws -> URL {
     let url = directory.appendingPathComponent("codex")

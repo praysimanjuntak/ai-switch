@@ -110,23 +110,26 @@ extension View {
     func surface(radius: CGFloat = 12) -> some View { modifier(Surface(radius: radius)) }
 }
 
-/// Black for the one primary action on a surface; white with a hairline otherwise.
+/// Black for the one primary action on a surface; white with a hairline otherwise;
+/// red for an action that can't be undone.
 struct AppButtonStyle: ButtonStyle {
     var prominent = false
     var compact = false
+    var destructive = false
     @Environment(\.isEnabled) private var isEnabled
 
     func makeBody(configuration: Configuration) -> some View {
-        configuration.label
+        let filled = prominent || destructive
+        return configuration.label
             .font(.system(size: compact ? 11.5 : 12.5, weight: .medium))
             .padding(.horizontal, compact ? 10 : 14)
             .frame(height: compact ? 26 : 32)
-            .foregroundStyle(prominent ? Color.white : AppPalette.ink)
-            .background(prominent ? AppPalette.ink : AppPalette.canvas)
+            .foregroundStyle(filled ? Color.white : AppPalette.ink)
+            .background(destructive ? AppPalette.critical : prominent ? AppPalette.ink : AppPalette.canvas)
             .clipShape(RoundedRectangle(cornerRadius: compact ? 7 : 8))
             .overlay {
                 RoundedRectangle(cornerRadius: compact ? 7 : 8)
-                    .strokeBorder(prominent ? Color.clear : AppPalette.line, lineWidth: 1)
+                    .strokeBorder(filled ? Color.clear : AppPalette.line, lineWidth: 1)
             }
             .opacity(isEnabled ? (configuration.isPressed ? 0.75 : 1) : 0.4)
             .contentShape(RoundedRectangle(cornerRadius: 8))
