@@ -332,6 +332,8 @@ struct SectionCaption: View {
 /// "Live" while usage is under a minute old, then how long ago it was read.
 struct FreshnessLabel: View {
     let fetchedAt: Date?
+    /// Says "Updated …" where the label stands on its own, away from the meters.
+    var labelled = false
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 15)) { context in
@@ -351,7 +353,10 @@ struct FreshnessLabel: View {
                 .foregroundStyle(AppPalette.success)
                 .help("Updated \(fetchedAt.formatted(date: .omitted, time: .standard))")
             } else {
-                Text(age < 3600 ? "\(Int(age / 60)) min ago" : fetchedAt.formatted(date: .abbreviated, time: .shortened))
+                let ago = age < 3600 ? "\(Int(age / 60)) min ago"
+                    : age < 86400 ? "\(Int(age / 3600)) h ago"
+                    : fetchedAt.formatted(.dateTime.day().month(.abbreviated))
+                Text(labelled ? "Updated \(ago)" : ago)
                     .foregroundStyle(AppPalette.tertiaryInk)
                     .help("Updated \(fetchedAt.formatted(date: .complete, time: .standard))")
             }

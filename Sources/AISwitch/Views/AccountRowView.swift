@@ -84,11 +84,15 @@ struct AccountRowView: View {
                         .truncationMode(.middle)
                         .help(profile.subtitle)
                 }
-                if let resets = profile.usage?.resets {
-                    LimitResetsButton(accountName: profile.displayName, provider: profile.provider,
-                                      resets: resets, use: useReset)
-                        .padding(.top, 2)
+                HStack(spacing: 8) {
+                    if let resets = profile.usage?.resets {
+                        LimitResetsButton(accountName: profile.displayName, provider: profile.provider,
+                                          resets: resets, use: useReset)
+                    }
+                    FreshnessLabel(fetchedAt: profile.usage?.fetchedAt, labelled: true)
+                        .font(.system(size: 11))
                 }
+                .padding(.top, 2)
             }
         }
     }
@@ -120,24 +124,20 @@ struct AccountRowView: View {
     }
 
     private var actions: some View {
-        VStack(alignment: .trailing, spacing: 7) {
-            HStack(spacing: 4) {
-                if isSwitching || isRefreshing {
-                    HStack(spacing: 6) {
-                        ProgressView().controlSize(.small).scaleEffect(0.7)
-                        Text(isSwitching ? "Switching" : "Updating")
-                    }
-                    .font(.system(size: 11.5))
-                    .foregroundStyle(AppPalette.secondaryInk)
-                } else if !isActive {
-                    Button("Switch", action: activate)
-                        .buttonStyle(AppButtonStyle(compact: true))
-                        .help("Use \(profile.displayName) for new \(profile.provider.shortName) sessions")
+        HStack(spacing: 4) {
+            if isSwitching || isRefreshing {
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.small).scaleEffect(0.7)
+                    Text(isSwitching ? "Switching" : "Updating")
                 }
-                menu
+                .font(.system(size: 11.5))
+                .foregroundStyle(AppPalette.secondaryInk)
+            } else if !isActive {
+                Button("Switch", action: activate)
+                    .buttonStyle(AppButtonStyle(compact: true))
+                    .help("Use \(profile.displayName) for new \(profile.provider.shortName) sessions")
             }
-            FreshnessLabel(fetchedAt: profile.usage?.fetchedAt)
-                .font(.system(size: 11))
+            menu
         }
     }
 
