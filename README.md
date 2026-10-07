@@ -12,7 +12,7 @@ An independent project, not an official OpenAI or Anthropic app.
 
 ## Download and install
 
-[Download AI Switch 0.3.0 — universal DMG](https://github.com/praysimanjuntak/ai-switch/releases/download/v0.3.0/AI-Switch-0.3.0-macOS-universal-beta.dmg) · [SHA-256 checksum](https://github.com/praysimanjuntak/ai-switch/releases/download/v0.3.0/AI-Switch-0.3.0-macOS-universal-beta.dmg.sha256) · [Release notes](https://github.com/praysimanjuntak/ai-switch/releases/tag/v0.3.0)
+[Download AI Switch 0.4.0 — universal DMG](https://github.com/praysimanjuntak/ai-switch/releases/download/v0.4.0/AI-Switch-0.4.0-macOS-universal-beta.dmg) · [SHA-256 checksum](https://github.com/praysimanjuntak/ai-switch/releases/download/v0.4.0/AI-Switch-0.4.0-macOS-universal-beta.dmg.sha256) · [Release notes](https://github.com/praysimanjuntak/ai-switch/releases/tag/v0.4.0)
 
 1. Open the DMG and drag **AI Switch** to **Applications**.
 2. Eject the image, then launch the installed app.
@@ -26,7 +26,7 @@ You do not need Xcode, Swift, or an Apple Developer membership to run the app. T
 To verify the download, place the DMG and checksum in the same folder and run:
 
 ```sh
-shasum -a 256 -c AI-Switch-0.3.0-macOS-universal-beta.dmg.sha256
+shasum -a 256 -c AI-Switch-0.4.0-macOS-universal-beta.dmg.sha256
 ```
 
 ## What works
@@ -40,7 +40,7 @@ shasum -a 256 -c AI-Switch-0.3.0-macOS-universal-beta.dmg.sha256
 - Read Codex limits through the local Codex app-server protocol.
 - Read Claude Code's five-hour and seven-day limit data from the same authenticated usage surface used by the CLI.
 - Renew an account's expired sign-in with **Renew sign-in** (in the row's **Needs attention** popover, its actions menu, and the menu-bar panel). Nothing is renewed automatically.
-- See Codex usage live: Codex records its rate limits in its session logs after every turn, and AI Switch reads them within seconds, with no network request, attributing each one to the saved account that ran it. Every account is also checked every five minutes and on demand. Claude Code has no local feed, and Anthropic rate-limits its usage endpoint even at 30–60 second polling, so five minutes is the safe pace there; when Anthropic refuses a check, AI Switch waits longer before the next one (up to an hour) instead of retrying on schedule.
+- See Codex usage live: Codex records its rate limits in its session logs after every turn, and AI Switch reads them within seconds, with no network request, attributing each one to the saved account that ran it. Every account is also checked every five minutes and on demand. Claude Code has no local feed, and Anthropic rate-limits its usage endpoint even at 30–60 second polling, so five minutes is the safe pace there; when Anthropic refuses a check, AI Switch waits longer before the next one (up to an hour) instead of retrying on schedule (0.4.0 and later).
 - See local reset clock times in each row and in the menu-bar panel; hover a meter for the full date, seconds, and time zone. Missing reset times are explicitly marked as not reported. Each row shows how fresh its usage is ("Live" under a minute old).
 - Filter by provider, search names and email addresses, and rename accounts from their actions menu.
 - Use Command-F to search, Command-N to add an account, and Command-R to refresh usage.
@@ -53,7 +53,7 @@ A live credential is only ever saved into the profile of the account it belongs 
 
 An access token that has passed its expiry is reported as needing renewal rather than as a sign-out. **Renew sign-in** starts one tool-less print-mode Claude Code session (`claude -p --tools ""`) inside the profile's own config directory, so Claude Code renews the token with its own client and AI Switch folds the result back into the profile file; this spends one small message of that account's quota. For Codex it asks the Codex app-server to refresh the token. AI Switch never calls an OAuth token endpoint itself, and nothing is renewed without your click. Starting a CLI session with the account active still works as before; refresh afterwards.
 
-**Upgrading from 0.2.x:** earlier versions stored Claude profiles as Keychain items. The active Claude account migrates itself on the first refresh. Any other saved Claude account shows **Attention** with a message asking you to remove and re-add it; removing it also deletes the old Keychain item.
+**Upgrading from 0.2.x:** earlier versions stored Claude profiles as Keychain items. The active Claude account migrates itself on the first refresh. Any other saved Claude account shows **Needs attention** with a message asking you to remove and re-add it; removing it also deletes the old Keychain item.
 
 ## Requirements
 

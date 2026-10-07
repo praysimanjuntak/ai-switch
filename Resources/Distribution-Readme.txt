@@ -35,11 +35,15 @@ macOS's own dialog, never send it to anyone.
 
 Accounts saved by AI Switch 0.2.x lived in the Keychain. The active Claude
 account migrates on its first refresh; other saved Claude accounts show
-Attention and must be removed and added again.
+Needs attention and must be removed and added again.
 
 Codex credentials are stored locally in restricted-access profile files. When
 activating a Codex account, AI Switch sets cli_auth_credentials_store to file
 in your Codex configuration and backs up existing configuration/credentials.
+
+A CLI's sign-in is only ever saved into the account it belongs to. If you sign
+in to a different account in a CLI, your saved accounts are left alone; use
+Import to add the new one.
 
 Switches apply to new CLI sessions; existing sessions can keep their old login.
 Usage integrations depend on provider CLI/API behavior and can change. This is
