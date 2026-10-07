@@ -8,7 +8,7 @@ struct MenuBarView: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 9) {
-                AppMark(size: 25)
+                AppMark(size: 22)
                 Text("AI Switch").font(.system(size: 13, weight: .semibold))
                 Spacer()
                 IconButton(symbol: "arrow.clockwise", help: "Refresh active accounts", isWorking: store.isRefreshing) {
@@ -22,22 +22,25 @@ struct MenuBarView: View {
                 }
                 .disabled(store.isRefreshing)
             }
-            .padding(.horizontal, 15)
-            .padding(.top, 12)
-            .padding(.bottom, 8)
+            .padding(.leading, 16)
+            .padding(.trailing, 10)
+            .padding(.vertical, 10)
 
-            VStack(spacing: 8) {
+            VStack(spacing: 10) {
                 ForEach(AIProvider.allCases) { provider in
                     MenuProviderCard(provider: provider)
                 }
                 if let error = store.errorMessage {
-                    HStack(alignment: .top) {
-                        Text(error).font(.system(size: 10)).lineLimit(3)
-                        Button { store.dismissError() } label: { Image(systemName: "xmark") }
+                    HStack(alignment: .top, spacing: 8) {
+                        Image(systemName: "exclamationmark.circle.fill").foregroundStyle(AppPalette.warning)
+                        Text(error).font(.system(size: 11)).foregroundStyle(AppPalette.ink).lineLimit(4)
+                        Spacer(minLength: 4)
+                        Button { store.dismissError() } label: { Image(systemName: "xmark").font(.system(size: 10)) }
                             .buttonStyle(.plain)
+                            .foregroundStyle(AppPalette.secondaryInk)
                     }
-                    .foregroundStyle(AppPalette.warning)
-                    .padding(10)
+                    .padding(12)
+                    .surface(radius: 10)
                 }
             }
             .padding(.horizontal, 12)
@@ -49,9 +52,9 @@ struct MenuBarView: View {
                     openWindow(id: "main")
                     NSApp.activate(ignoringOtherApps: true)
                 } label: {
-                    HStack(spacing: 6) {
-                        Text("Manage accounts")
-                        Image(systemName: "arrow.up.right").font(.system(size: 8))
+                    HStack(spacing: 5) {
+                        Text("Open AI Switch")
+                        Image(systemName: "arrow.up.right").font(.system(size: 9, weight: .medium))
                     }
                 }
                 .buttonStyle(.plain)
@@ -61,11 +64,11 @@ struct MenuBarView: View {
                     .buttonStyle(.plain)
                     .foregroundStyle(AppPalette.secondaryInk)
             }
-            .font(.system(size: 10, weight: .medium))
-            .padding(.horizontal, 17)
-            .padding(.vertical, 13)
+            .font(.system(size: 12, weight: .medium))
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
         }
-        .frame(width: 324)
+        .frame(width: 340)
         .background(AppPalette.canvas)
         .foregroundStyle(AppPalette.ink)
     }
@@ -76,71 +79,82 @@ private struct MenuProviderCard: View {
     let provider: AIProvider
 
     private var profile: AccountProfile? { store.activeProfile(for: provider) }
+    private var isStale: Bool { profile?.authIssue != nil }
 
     var body: some View {
-        VStack(spacing: 13) {
-            HStack(spacing: 9) {
-                ProviderMark(provider: provider, size: 29)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(provider.displayName).font(.system(size: 9)).foregroundStyle(AppPalette.secondaryInk)
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 10) {
+                ProviderMark(provider: provider, size: 30)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(provider.displayName).font(.system(size: 11)).foregroundStyle(AppPalette.secondaryInk)
                     Text(profile?.displayName ?? "No active account")
-                        .font(.system(size: 11, weight: .semibold))
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(profile == nil ? AppPalette.tertiaryInk : AppPalette.ink)
                         .lineLimit(1)
+                        .truncationMode(.middle)
                 }
-                Spacer()
-                Menu {
-                    ForEach(store.profiles.filter { $0.provider == provider }) { account in
-                        Button {
-                            Task {
-                                do { try await store.activate(account.id) }
-                                catch { store.report(error) }
-                            }
-                        } label: {
-                            if store.isActive(account) {
-                                Label(account.displayName, systemImage: "checkmark")
-                            } else {
-                                Text(account.displayName)
-                            }
-                        }
-                        .disabled(store.isActive(account))
+                Spacer(minLength: 6)
+                if let profile {
+                    FreshnessLabel(fetchedAt: profile.usage?.fetchedAt).font(.system(size: 10.5))
+                }
+                switchMenu
+            }
+            if let profile {
+                HStack(spacing: 18) {
+                    UsageMeter(title: "5-hour", window: profile.usage?.session, isStale: isStale)
+                    UsageMeter(title: "Weekly", window: profile.usage?.weekly, isStale: isStale)
+                }
+                ForEach(profile.usage?.scoped ?? [], id: \.name) { limit in
+                    UsageMeter(title: "\(limit.name) weekly", window: limit.window, isStale: isStale)
+                }
+                if let issue = profile.authIssue {
+                    HStack(spacing: 8) {
+                        Label("Needs attention", systemImage: "exclamationmark.circle.fill")
+                            .help(issue)
+                        Spacer()
+                        Button("Renew sign-in") { Task { await store.renew(profile.id) } }
+                            .buttonStyle(.plain)
+                            .fontWeight(.medium)
+                            .disabled(store.isRefreshing || store.switchingProfileID != nil)
+                            .help("Ask \(provider.displayName) to renew this account's sign-in")
                     }
-                } label: {
-                    Image(systemName: "chevron.up.chevron.down")
-                        .font(.system(size: 9, weight: .medium))
-                        .foregroundStyle(AppPalette.secondaryInk)
-                        .frame(width: 22, height: 24)
+                    .font(.system(size: 11))
+                    .foregroundStyle(AppPalette.warning)
                 }
-                .menuStyle(.borderlessButton)
-                .menuIndicator(.hidden)
-                .fixedSize()
-                .disabled(store.isRefreshing || store.switchingProfileID != nil || !store.profiles.contains { $0.provider == provider })
-                .accessibilityLabel("Switch \(provider.shortName) account")
-            }
-            HStack(spacing: 20) {
-                UsageMeter(title: "5-hour", window: profile?.usage?.session, accent: provider.accent,
-                           isStale: profile?.authIssue != nil)
-                UsageMeter(title: "Weekly", window: profile?.usage?.weekly, accent: provider.accent,
-                           isStale: profile?.authIssue != nil)
-            }
-            ForEach(profile?.usage?.scoped ?? [], id: \.name) { scoped in
-                UsageMeter(title: "Weekly · \(scoped.name)", window: scoped.window, accent: provider.accent,
-                           isStale: profile?.authIssue != nil)
-            }
-            if let profile, let issue = profile.authIssue {
-                HStack(spacing: 8) {
-                    Label("Usage needs attention", systemImage: "exclamationmark.circle")
-                        .help(issue)
-                    Spacer()
-                    Button("Renew") { Task { await store.renew(profile.id) } }
-                        .buttonStyle(.plain)
-                        .disabled(store.isRefreshing || store.switchingProfileID != nil)
-                        .help("Ask \(provider.displayName) to renew this account's sign-in")
-                }
-                .font(.system(size: 9))
-                .foregroundStyle(AppPalette.warning)
             }
         }
-        .padding(13)
-        .surface(radius: 10)
+        .padding(14)
+        .surface(radius: 12)
+    }
+
+    private var switchMenu: some View {
+        Menu {
+            ForEach(store.profiles.filter { $0.provider == provider }) { account in
+                Button {
+                    Task {
+                        do { try await store.activate(account.id) }
+                        catch { store.report(error) }
+                    }
+                } label: {
+                    if store.isActive(account) {
+                        Label(account.displayName, systemImage: "checkmark")
+                    } else {
+                        Text(account.displayName)
+                    }
+                }
+                .disabled(store.isActive(account))
+            }
+        } label: {
+            Image(systemName: "chevron.up.chevron.down")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(AppPalette.secondaryInk)
+                .frame(width: 24, height: 26)
+                .contentShape(Rectangle())
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .disabled(store.isRefreshing || store.switchingProfileID != nil || !store.profiles.contains { $0.provider == provider })
+        .accessibilityLabel("Switch \(provider.shortName) account")
     }
 }

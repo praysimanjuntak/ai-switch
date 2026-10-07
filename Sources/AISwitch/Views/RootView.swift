@@ -1,74 +1,52 @@
 import SwiftUI
 
-private enum AccountFilter: Hashable {
-    case all, active, provider(AIProvider)
-
-    var title: String {
-        switch self {
-        case .all: "All accounts"
-        case .active: "Active accounts"
-        case .provider(let provider): provider.displayName
-        }
-    }
+private enum ProviderFilter: Hashable {
+    case all, provider(AIProvider)
 }
 
 struct RootView: View {
     @EnvironmentObject private var store: AccountStore
-    @State private var filter: AccountFilter = .all
+    @State private var filter: ProviderFilter = .all
     @State private var search = ""
     @State private var showsAddAccount = false
     @State private var showsPhoneSync = false
     @FocusState private var searchFocused: Bool
 
-    private var filteredProfiles: [AccountProfile] {
+    private var matchingProfiles: [AccountProfile] {
         let query = search.trimmingCharacters(in: .whitespacesAndNewlines)
         return store.profiles.filter { profile in
-            let matchesFilter: Bool
-            switch filter {
-            case .all: matchesFilter = true
-            case .active: matchesFilter = store.isActive(profile)
-            case .provider(let provider): matchesFilter = profile.provider == provider
+            let matchesFilter = switch filter {
+            case .all: true
+            case .provider(let provider): profile.provider == provider
             }
             let matchesSearch = query.isEmpty || [profile.displayName, profile.email ?? "", profile.provider.displayName, profile.plan ?? ""]
                 .contains { $0.localizedCaseInsensitiveContains(query) }
             return matchesFilter && matchesSearch
         }.sorted { lhs, rhs in
-            if store.isActive(lhs) != store.isActive(rhs) { return store.isActive(lhs) }
             if lhs.provider != rhs.provider { return lhs.provider.rawValue < rhs.provider.rawValue }
             return lhs.displayName.localizedStandardCompare(rhs.displayName) == .orderedAscending
         }
     }
 
     var body: some View {
-        HStack(spacing: 0) {
-            sidebar
-            Rectangle().fill(AppPalette.line).frame(width: 1)
-            VStack(alignment: .leading, spacing: 18) {
-                header
-                HStack(spacing: 12) {
-                    ForEach(AIProvider.allCases) { provider in
-                        Button { filter = .provider(provider) } label: {
-                            ActiveSummary(provider: provider, profile: store.activeProfile(for: provider))
-                        }
-                        .buttonStyle(.plain)
-                        .help("Show \(provider.displayName) accounts")
-                    }
-                }
-                accountsSection
-                footer
-            }
-            .padding(.horizontal, 24)
-            .padding(.top, 16)
-            .padding(.bottom, 14)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(AppPalette.canvas.ignoresSafeArea())
+        VStack(alignment: .leading, spacing: 0) {
+            header
+                .padding(.top, 34) // Below the window controls.
+            filterBar
+                .padding(.top, 22)
+                .padding(.bottom, 14)
+            list
+            footer
         }
+        .padding(.horizontal, 32)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(AppPalette.canvas.ignoresSafeArea())
         .foregroundStyle(AppPalette.ink)
-        .overlay(alignment: .top) {
+        .overlay(alignment: .bottom) {
             if let message = store.errorMessage {
                 ErrorBanner(message: message, dismiss: store.dismissError)
-                    .padding(.top, 12)
-                    .padding(.horizontal, 40)
+                    .frame(maxWidth: 560)
+                    .padding(.bottom, 54) // Above the footer.
             }
         }
         .sheet(isPresented: $showsAddAccount) {
@@ -79,97 +57,18 @@ struct RootView: View {
         }
     }
 
-    private var sidebar: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 9) {
-                AppMark()
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("AI Switch").font(.system(size: 15, weight: .semibold))
-                    Text("Stay in your flow.").font(.system(size: 9)).foregroundStyle(AppPalette.secondaryInk)
-                }
-            }
-            .padding(.horizontal, 18)
-            .padding(.top, 17)
-            .padding(.bottom, 34)
-
-            SectionCaption(title: "Workspace").padding(.horizontal, 20).padding(.bottom, 9)
-            sidebarButton(.all, title: "All accounts", count: store.profiles.count) {
-                Image(systemName: "square.stack").font(.system(size: 12))
-            }
-            sidebarButton(.active, title: "Active now", count: store.profiles.filter { store.isActive($0) }.count) {
-                Image(systemName: "bolt").font(.system(size: 12))
-            }
-
-            SectionCaption(title: "Providers").padding(.horizontal, 20).padding(.top, 27).padding(.bottom, 9)
-            ForEach(AIProvider.allCases) { provider in
-                sidebarButton(.provider(provider), title: provider.shortName,
-                              count: store.profiles.filter { $0.provider == provider }.count) {
-                    ProviderLogo(provider: provider, size: 12)
-                }
-            }
-            Spacer(minLength: 24)
-            VStack(alignment: .leading, spacing: 12) {
-                SectionCaption(title: "Connections")
-                ForEach(AIProvider.allCases) { provider in
-                    HStack(spacing: 7) {
-                        Circle().fill(store.cliAvailable(for: provider) ? AppPalette.success : AppPalette.tertiaryInk)
-                            .frame(width: 5, height: 5)
-                        Text(provider.shortName).font(.system(size: 10))
-                        Spacer()
-                        Text(store.cliAvailable(for: provider) ? "Installed" : "Not found")
-                            .font(.system(size: 9))
-                            .foregroundStyle(AppPalette.tertiaryInk)
-                    }
-                }
-                Rectangle().fill(AppPalette.line).frame(height: 1).padding(.vertical, 3)
-                Label("Stored on this Mac", systemImage: "lock.shield")
-                    .font(.system(size: 9))
+    private var header: some View {
+        HStack(alignment: .center, spacing: 8) {
+            VStack(alignment: .leading, spacing: 5) {
+                Text("Accounts")
+                    .font(.system(size: 26, weight: .semibold))
+                    .tracking(-0.6)
+                Text("Choose the account Codex and Claude Code use. Switches apply to new sessions.")
+                    .font(.system(size: 12.5))
                     .foregroundStyle(AppPalette.secondaryInk)
             }
-            .padding(20)
-        }
-        .frame(width: 174)
-        .frame(maxHeight: .infinity)
-        .background(AppPalette.sidebar.ignoresSafeArea())
-    }
-
-    private func sidebarButton(
-        _ value: AccountFilter, title: String, count: Int, @ViewBuilder icon: () -> some View
-    ) -> some View {
-        Button { filter = value } label: {
-            HStack(spacing: 10) {
-                icon().frame(width: 15)
-                Text(title).font(.system(size: 11, weight: filter == value ? .semibold : .regular))
-                Spacer(minLength: 4)
-                Text("\(count)")
-                    .font(.system(size: 9, weight: .medium)).monospacedDigit()
-                    .foregroundStyle(filter == value ? AppPalette.ink : AppPalette.tertiaryInk)
-            }
-            .foregroundStyle(filter == value ? AppPalette.ink : AppPalette.secondaryInk)
-            .padding(.horizontal, 11)
-            .frame(height: 34)
-            .background(filter == value ? Color.white : Color.clear)
-            .clipShape(RoundedRectangle(cornerRadius: 7))
-            .overlay {
-                RoundedRectangle(cornerRadius: 7)
-                    .strokeBorder(filter == value ? AppPalette.line.opacity(0.7) : .clear)
-            }
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .padding(.horizontal, 10)
-        .padding(.vertical, 2)
-        .accessibilityAddTraits(filter == value ? .isSelected : [])
-    }
-
-    private var header: some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 5) {
-                Text("Accounts").font(.system(size: 26, weight: .semibold)).tracking(-0.8)
-                Text("One place for every account.").font(.system(size: 11)).foregroundStyle(AppPalette.secondaryInk)
-            }
-            Spacer()
-            IconButton(symbol: "arrow.clockwise", help: "Refresh all usage", isWorking: store.isRefreshing) {
+            Spacer(minLength: 16)
+            IconButton(symbol: "arrow.clockwise", help: "Refresh usage", isWorking: store.isRefreshing) {
                 Task { await store.refreshAll() }
             }
             .disabled(store.isRefreshing)
@@ -178,178 +77,202 @@ struct RootView: View {
                        help: store.sync.isConfigured ? "Phone sync connected" : "Show usage on your phone") {
                 showsPhoneSync = true
             }
-            Menu {
+            importMenu
+            Button { showsAddAccount = true } label: {
+                Label("Add account", systemImage: "plus").labelStyle(.titleAndIcon)
+            }
+            .buttonStyle(AppButtonStyle(prominent: true))
+            .keyboardShortcut("n", modifiers: .command)
+            .padding(.leading, 4)
+        }
+    }
+
+    private var importMenu: some View {
+        Menu {
+            ForEach(AIProvider.allCases) { provider in
+                Button {
+                    Task {
+                        do { try await store.importCurrent(provider: provider) }
+                        catch { store.report(error) }
+                    }
+                } label: {
+                    Label { Text("Import current \(provider.displayName) account") } icon: { Image(nsImage: provider.logo) }
+                }
+            }
+        } label: {
+            Text("Import")
+        }
+        .menuStyle(.button)
+        .buttonStyle(AppButtonStyle())
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("Save the account a CLI is signed in to now")
+    }
+
+    private var filterBar: some View {
+        HStack(spacing: 12) {
+            HStack(spacing: 2) {
+                filterPill(.all, title: "All", count: store.profiles.count)
                 ForEach(AIProvider.allCases) { provider in
-                    Button {
-                        Task {
-                            do { try await store.importCurrent(provider: provider) }
-                            catch { store.report(error) }
-                        }
-                    } label: {
-                        Label { Text("Import current \(provider.shortName)") } icon: { Image(nsImage: provider.logo) }
-                    }
+                    filterPill(.provider(provider), title: provider.displayName,
+                               count: store.profiles.filter { $0.provider == provider }.count)
                 }
-            } label: {
-                HStack(spacing: 5) {
-                    Image(systemName: "square.and.arrow.down")
-                    Text("Import")
-                }
-                .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(AppPalette.secondaryInk)
-                .padding(.horizontal, 8)
-                .frame(height: 32)
             }
-            .menuStyle(.borderlessButton)
-            .fixedSize()
-            Button { showsAddAccount = true } label: { Label("Add account", systemImage: "plus") }
-                .buttonStyle(AppButtonStyle(prominent: true))
-                .keyboardShortcut("n", modifiers: .command)
+            .padding(3)
+            .background(AppPalette.fill)
+            .clipShape(RoundedRectangle(cornerRadius: 10))
+            Spacer()
+            searchField
         }
     }
 
-    private var accountsSection: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack(spacing: 8) {
-                Text(filter.title).font(.system(size: 13, weight: .semibold))
-                Text("\(filteredProfiles.count)")
-                    .font(.system(size: 10, weight: .medium)).monospacedDigit()
-                    .foregroundStyle(AppPalette.secondaryInk)
-                    .padding(.horizontal, 6).padding(.vertical, 3)
-                    .background(AppPalette.line.opacity(0.45))
-                    .clipShape(Capsule())
-                Spacer()
-                searchField
+    private func filterPill(_ value: ProviderFilter, title: String, count: Int) -> some View {
+        let selected = filter == value
+        return Button { filter = value } label: {
+            HStack(spacing: 6) {
+                Text(title)
+                Text("\(count)")
+                    .monospacedDigit()
+                    .foregroundStyle(selected ? AppPalette.secondaryInk : AppPalette.tertiaryInk)
             }
-            .frame(height: 30)
-            if filteredProfiles.isEmpty {
-                emptyState.frame(maxWidth: .infinity).frame(height: 240).surface()
-                Spacer(minLength: 0)
-            } else {
-                ScrollView {
-                    LazyVGrid(columns: Self.gridColumns, alignment: .leading, spacing: 14) {
-                        ForEach(filteredProfiles) { profile in
-                            AccountCardView(
-                                profile: profile,
-                                isActive: store.isActive(profile),
-                                isSwitching: store.switchingProfileID == profile.id,
-                                isRefreshing: store.refreshingProfileIDs.contains(profile.id),
-                                activate: {
-                                    Task {
-                                        do { try await store.activate(profile.id) }
-                                        catch { store.report(error) }
-                                    }
-                                },
-                                refresh: { Task { await store.refresh(profile.id) } },
-                                renew: { Task { await store.renew(profile.id) } },
-                                rename: { store.rename(profile.id, to: $0) },
-                                remove: { Task { await store.remove(profile.id) } }
-                            )
-                        }
-                    }
-                    // Room for the hover shadow, which the scroll view would otherwise clip.
-                    .padding(6)
-                }
-                .padding(-6)
-                .scrollIndicators(.automatic)
-            }
+            .font(.system(size: 12, weight: selected ? .semibold : .medium))
+            .foregroundStyle(selected ? AppPalette.ink : AppPalette.secondaryInk)
+            .padding(.horizontal, 12)
+            .frame(height: 26)
+            .background(selected ? AppPalette.canvas : Color.clear)
+            .clipShape(RoundedRectangle(cornerRadius: 7))
+            .shadow(color: .black.opacity(selected ? 0.07 : 0), radius: 1.5, y: 0.5)
+            .contentShape(Rectangle())
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(selected ? .isSelected : [])
     }
-
-    private static let gridColumns = Array(repeating: GridItem(.flexible(), spacing: 14), count: 4)
 
     private var searchField: some View {
         HStack(spacing: 7) {
             Button { searchFocused = true } label: {
-                Image(systemName: "magnifyingglass").font(.system(size: 10))
+                Image(systemName: "magnifyingglass").font(.system(size: 11))
             }
             .buttonStyle(.plain)
             .keyboardShortcut("f", modifiers: .command)
             .accessibilityLabel("Search accounts")
             TextField("Search accounts", text: $search)
                 .textFieldStyle(.plain)
-                .font(.system(size: 11))
+                .font(.system(size: 12.5))
                 .focused($searchFocused)
             if !search.isEmpty {
-                Button { search = "" } label: { Image(systemName: "xmark.circle.fill").font(.system(size: 10)) }
+                Button { search = "" } label: { Image(systemName: "xmark.circle.fill").font(.system(size: 11)) }
                     .buttonStyle(.plain)
                     .accessibilityLabel("Clear search")
             } else {
-                Text("⌘F").font(.system(size: 9)).foregroundStyle(AppPalette.tertiaryInk)
+                Text("⌘F").font(.system(size: 11)).foregroundStyle(AppPalette.tertiaryInk)
             }
         }
         .foregroundStyle(AppPalette.secondaryInk)
-        .padding(.horizontal, 9)
-        .frame(width: 185, height: 29)
-        .surface(radius: 7)
+        .padding(.horizontal, 10)
+        .frame(width: 230, height: 32)
+        .surface(radius: 8)
     }
 
-    private var footer: some View {
-        HStack(spacing: 6) {
-            Image(systemName: "arrow.triangle.2.circlepath").font(.system(size: 9))
-            Text(store.isRefreshing ? "Updating usage…" : "Usage updates every 5 minutes")
-            Spacer()
-            Text("Switches apply to new sessions")
-            Image(systemName: "arrow.up.right").font(.system(size: 8))
+    @ViewBuilder
+    private var list: some View {
+        let profiles = matchingProfiles
+        if profiles.isEmpty {
+            emptyState
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            let active = profiles.filter { store.isActive($0) }
+            let others = profiles.filter { !store.isActive($0) }
+            ScrollView {
+                VStack(alignment: .leading, spacing: 22) {
+                    if !active.isEmpty { section("Active", profiles: active) }
+                    if !others.isEmpty { section(active.isEmpty ? "Accounts" : "Other accounts", profiles: others) }
+                }
+                .padding(.vertical, 8)
+            }
+            .scrollIndicators(.automatic)
         }
-        .font(.system(size: 9))
-        .foregroundStyle(AppPalette.tertiaryInk)
-        .frame(height: 14)
+    }
+
+    private func section(_ title: String, profiles: [AccountProfile]) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            SectionCaption(title: title).padding(.leading, 2)
+            VStack(spacing: 0) {
+                ForEach(Array(profiles.enumerated()), id: \.element.id) { index, profile in
+                    if index > 0 {
+                        Rectangle().fill(AppPalette.line).frame(height: 1).padding(.leading, 64)
+                    }
+                    row(for: profile)
+                }
+            }
+            .surface(radius: 12)
+        }
+    }
+
+    private func row(for profile: AccountProfile) -> some View {
+        AccountRowView(
+            profile: profile,
+            isActive: store.isActive(profile),
+            isSwitching: store.switchingProfileID == profile.id,
+            isRefreshing: store.refreshingProfileIDs.contains(profile.id),
+            activate: {
+                Task {
+                    do { try await store.activate(profile.id) }
+                    catch { store.report(error) }
+                }
+            },
+            refresh: { Task { await store.refresh(profile.id) } },
+            renew: { Task { await store.renew(profile.id) } },
+            rename: { store.rename(profile.id, to: $0) },
+            remove: { Task { await store.remove(profile.id) } }
+        )
     }
 
     private var emptyState: some View {
         VStack(spacing: 10) {
-            Image(systemName: search.isEmpty ? "square.stack.3d.up" : "magnifyingglass")
-                .font(.system(size: 26, weight: .light))
+            Image(systemName: search.isEmpty ? "person.crop.circle.badge.plus" : "magnifyingglass")
+                .font(.system(size: 28, weight: .light))
                 .foregroundStyle(AppPalette.tertiaryInk)
-            Text(store.profiles.isEmpty ? "Your next account starts here" : "No matching accounts")
-                .font(.system(size: 14, weight: .semibold))
-            Text(store.profiles.isEmpty ? "Add an account or import one you already use." : "Try another search or choose a different provider.")
-                .font(.system(size: 11))
+                .padding(.bottom, 4)
+            Text(store.profiles.isEmpty ? "No accounts yet" : "No matching accounts")
+                .font(.system(size: 15, weight: .semibold))
+            Text(store.profiles.isEmpty
+                 ? "Add an account, or import the one a CLI is signed in to."
+                 : "Try another search or provider.")
+                .font(.system(size: 12.5))
                 .foregroundStyle(AppPalette.secondaryInk)
-            if store.profiles.isEmpty {
-                Button("Add account") { showsAddAccount = true }.buttonStyle(AppButtonStyle(prominent: true))
-            } else {
-                Button("Show all accounts") { search = ""; filter = .all }.buttonStyle(AppButtonStyle())
+            Group {
+                if store.profiles.isEmpty {
+                    Button("Add account") { showsAddAccount = true }.buttonStyle(AppButtonStyle(prominent: true))
+                } else {
+                    Button("Show all accounts") { search = ""; filter = .all }.buttonStyle(AppButtonStyle())
+                }
             }
+            .padding(.top, 6)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(.bottom, 40)
     }
-}
 
-private struct ActiveSummary: View {
-    let provider: AIProvider
-    let profile: AccountProfile?
-
-    var body: some View {
-        HStack(spacing: 11) {
-            ProviderMark(provider: provider, size: 34)
-            VStack(alignment: .leading, spacing: 5) {
-                Text(provider.displayName).font(.system(size: 10)).foregroundStyle(AppPalette.secondaryInk)
-                Text(profile?.displayName ?? "No active account")
-                    .font(.system(size: 13, weight: .semibold))
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-            }
-            Spacer(minLength: 8)
-            VStack(alignment: .trailing, spacing: 6) {
-                HStack(spacing: 4) {
-                    Circle().fill(profile == nil ? AppPalette.tertiaryInk : AppPalette.success).frame(width: 4, height: 4)
-                    Text(profile == nil ? "NOT CONNECTED" : "ACTIVE")
-                        .font(.system(size: 8, weight: .medium)).tracking(0.7)
-                }
-                .foregroundStyle(AppPalette.secondaryInk)
-                if let weekly = profile?.usage?.weekly {
-                    Text("\(Int(weekly.remainingPercent.rounded()))% weekly left")
-                        .font(.system(size: 10, weight: .medium))
-                        .foregroundStyle(provider.accent)
+    private var footer: some View {
+        HStack(spacing: 16) {
+            ForEach(AIProvider.allCases) { provider in
+                let installed = store.cliAvailable(for: provider)
+                HStack(spacing: 6) {
+                    Circle().fill(installed ? AppPalette.success : AppPalette.tertiaryInk).frame(width: 6, height: 6)
+                    Text(installed ? "\(provider.displayName) CLI" : "\(provider.displayName) CLI not found")
                 }
             }
+            Spacer()
+            Text(store.isRefreshing ? "Checking usage…" : "Codex usage is live; all accounts are checked every 5 minutes")
+            Label("Credentials stay on this Mac", systemImage: "lock")
+                .labelStyle(.titleAndIcon)
         }
-        .padding(.horizontal, 16)
-        .frame(maxWidth: .infinity)
-        .frame(height: 76)
-        .surface()
+        .font(.system(size: 11))
+        .foregroundStyle(AppPalette.tertiaryInk)
+        .frame(height: 40)
+        .overlay(alignment: .top) {
+            Rectangle().fill(AppPalette.line).frame(height: 1).padding(.horizontal, -32)
+        }
     }
 }
 
@@ -358,16 +281,23 @@ private struct ErrorBanner: View {
     let dismiss: () -> Void
 
     var body: some View {
-        HStack(spacing: 10) {
-            Image(systemName: "exclamationmark.circle.fill").foregroundStyle(AppPalette.warning)
-            Text(message).font(.system(size: 11)).lineLimit(3)
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "exclamationmark.circle.fill")
+                .foregroundStyle(AppPalette.warning)
+                .padding(.top, 1)
+            Text(message)
+                .font(.system(size: 12))
+                .foregroundStyle(AppPalette.ink)
+                .lineLimit(4)
+                .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 8)
-            IconButton(symbol: "xmark", help: "Dismiss error", action: dismiss)
+            IconButton(symbol: "xmark", help: "Dismiss", action: dismiss)
+                .padding(.top, -6)
         }
         .padding(.leading, 14)
-        .padding(.trailing, 4)
-        .padding(.vertical, 8)
-        .surface(radius: 10)
-        .shadow(color: .black.opacity(0.08), radius: 16, y: 6)
+        .padding(.trailing, 6)
+        .padding(.vertical, 12)
+        .surface(radius: 12)
+        .shadow(color: .black.opacity(0.08), radius: 18, y: 8)
     }
 }

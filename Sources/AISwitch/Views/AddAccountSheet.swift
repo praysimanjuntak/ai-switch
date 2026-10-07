@@ -161,27 +161,27 @@ private struct ProviderChoice: View {
     var body: some View {
         Button(action: action) {
             HStack(spacing: 12) {
-                ProviderMark(provider: provider, size: 35)
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(provider.displayName).font(.system(size: 12, weight: .semibold)).foregroundStyle(AppPalette.ink)
-                    Text(provider == .codex ? "OpenAI" : "Anthropic")
-                        .font(.system(size: 10)).foregroundStyle(AppPalette.secondaryInk)
+                ProviderMark(provider: provider, size: 36)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(provider.displayName).font(.system(size: 13, weight: .semibold)).foregroundStyle(AppPalette.ink)
+                    Text(provider.vendorName)
+                        .font(.system(size: 11.5)).foregroundStyle(AppPalette.secondaryInk)
                 }
                 Spacer()
                 if !available {
-                    Text("CLI not installed").font(.system(size: 9)).foregroundStyle(AppPalette.warning)
+                    Text("CLI not installed").font(.system(size: 11)).foregroundStyle(AppPalette.warning)
                 }
                 Image(systemName: selected ? "checkmark.circle.fill" : "circle")
-                    .font(.system(size: 16, weight: .light))
-                    .foregroundStyle(selected ? provider.accent : AppPalette.line)
+                    .font(.system(size: 17, weight: selected ? .regular : .light))
+                    .foregroundStyle(selected ? AppPalette.ink : AppPalette.tertiaryInk)
             }
             .padding(.horizontal, 14)
-            .frame(height: 65)
-            .background(selected ? provider.softAccent.opacity(0.4) : Color.white)
-            .clipShape(RoundedRectangle(cornerRadius: 10))
+            .frame(height: 64)
+            .background(selected ? AppPalette.raised : AppPalette.canvas)
+            .clipShape(RoundedRectangle(cornerRadius: 12))
             .overlay {
-                RoundedRectangle(cornerRadius: 10)
-                    .strokeBorder(selected ? provider.accent.opacity(0.65) : AppPalette.line, lineWidth: 1)
+                RoundedRectangle(cornerRadius: 12)
+                    .strokeBorder(selected ? AppPalette.ink : AppPalette.line, lineWidth: selected ? 1.5 : 1)
             }
             .contentShape(Rectangle())
         }

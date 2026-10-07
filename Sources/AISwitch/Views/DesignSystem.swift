@@ -2,21 +2,19 @@ import AppKit
 import SwiftUI
 
 extension AIProvider {
-    var accent: Color {
-        switch self {
-        case .codex: Color(red: 0.19, green: 0.39, blue: 0.33)
-        case .claude: Color(red: 0.72, green: 0.37, blue: 0.26)
-        }
-    }
-
-    var softAccent: Color { accent.opacity(0.08) }
-
     /// The vendor's mark as a template image, so it takes the current
     /// foreground style like an SF Symbol would.
     var logo: NSImage {
         switch self {
         case .codex: Self.openAI
         case .claude: Self.anthropic
+        }
+    }
+
+    var vendorName: String {
+        switch self {
+        case .codex: "OpenAI"
+        case .claude: "Anthropic"
         }
     }
 
@@ -47,6 +45,30 @@ extension AIProvider {
     }
 }
 
+/// White surfaces, neutral grays, and color only where it carries meaning.
+enum AppPalette {
+    static let canvas = Color.white
+    /// Hovered rows and quiet controls.
+    static let raised = Color(white: 0.972)
+    /// Logo tiles, badges, and the selected filter's track.
+    static let fill = Color(white: 0.953)
+    static let line = Color(white: 0.914)
+    static let track = Color(white: 0.925)
+    static let ink = Color(white: 0.09)
+    static let secondaryInk = Color(white: 0.43)
+    static let tertiaryInk = Color(white: 0.63)
+    static let success = Color(red: 0.14, green: 0.62, blue: 0.37)
+    static let warning = Color(red: 0.86, green: 0.53, blue: 0.09)
+    static let critical = Color(red: 0.87, green: 0.25, blue: 0.22)
+
+    /// A limit's bar: neutral while there is room, amber when running low, red near the end.
+    static func meter(remaining: Double) -> Color {
+        if remaining <= 10 { return critical }
+        if remaining <= 30 { return warning }
+        return ink
+    }
+}
+
 /// A provider's mark, sized like an SF Symbol of the given point size.
 struct ProviderLogo: View {
     let provider: AIProvider
@@ -63,23 +85,12 @@ struct ProviderLogo: View {
     }
 }
 
-enum AppPalette {
-    static let ink = Color(red: 0.16, green: 0.18, blue: 0.17)
-    static let secondaryInk = Color(red: 0.45, green: 0.47, blue: 0.45)
-    static let tertiaryInk = Color(red: 0.62, green: 0.64, blue: 0.61)
-    static let line = Color(red: 0.90, green: 0.91, blue: 0.89)
-    static let canvas = Color(red: 0.985, green: 0.984, blue: 0.976)
-    static let sidebar = Color(red: 0.955, green: 0.958, blue: 0.944)
-    static let success = Color(red: 0.25, green: 0.48, blue: 0.36)
-    static let warning = Color(red: 0.68, green: 0.44, blue: 0.15)
-}
-
 struct Surface: ViewModifier {
     var radius: CGFloat = 12
 
     func body(content: Content) -> some View {
         content
-            .background(Color.white)
+            .background(AppPalette.canvas)
             .clipShape(RoundedRectangle(cornerRadius: radius))
             .overlay { RoundedRectangle(cornerRadius: radius).strokeBorder(AppPalette.line, lineWidth: 1) }
     }
@@ -89,6 +100,7 @@ extension View {
     func surface(radius: CGFloat = 12) -> some View { modifier(Surface(radius: radius)) }
 }
 
+/// Black for the one primary action on a surface; white with a hairline otherwise.
 struct AppButtonStyle: ButtonStyle {
     var prominent = false
     var compact = false
@@ -96,18 +108,18 @@ struct AppButtonStyle: ButtonStyle {
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(.system(size: compact ? 11 : 12, weight: .medium))
-            .padding(.horizontal, compact ? 10 : 13)
-            .frame(height: compact ? 28 : 32)
+            .font(.system(size: compact ? 11.5 : 12.5, weight: .medium))
+            .padding(.horizontal, compact ? 10 : 14)
+            .frame(height: compact ? 26 : 32)
             .foregroundStyle(prominent ? Color.white : AppPalette.ink)
-            .background(prominent ? AppPalette.ink : Color.white)
-            .clipShape(RoundedRectangle(cornerRadius: 7))
+            .background(prominent ? AppPalette.ink : AppPalette.canvas)
+            .clipShape(RoundedRectangle(cornerRadius: compact ? 7 : 8))
             .overlay {
-                RoundedRectangle(cornerRadius: 7)
+                RoundedRectangle(cornerRadius: compact ? 7 : 8)
                     .strokeBorder(prominent ? Color.clear : AppPalette.line, lineWidth: 1)
             }
-            .opacity(isEnabled ? (configuration.isPressed ? 0.7 : 1) : 0.4)
-            .scaleEffect(configuration.isPressed ? 0.98 : 1)
+            .opacity(isEnabled ? (configuration.isPressed ? 0.75 : 1) : 0.4)
+            .contentShape(RoundedRectangle(cornerRadius: 8))
     }
 }
 
@@ -116,50 +128,55 @@ struct IconButton: View {
     let help: String
     var isWorking = false
     let action: () -> Void
+    @State private var isHovered = false
 
     var body: some View {
         Button(action: action) {
             Group {
                 if isWorking {
-                    ProgressView().controlSize(.mini)
+                    ProgressView().controlSize(.small).scaleEffect(0.8)
                 } else {
-                    Image(systemName: symbol).font(.system(size: 12, weight: .medium))
+                    Image(systemName: symbol).font(.system(size: 13, weight: .regular))
                 }
             }
             .frame(width: 30, height: 30)
+            .background(isHovered ? AppPalette.raised : Color.clear)
+            .clipShape(RoundedRectangle(cornerRadius: 8))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .foregroundStyle(AppPalette.secondaryInk)
+        .onHover { isHovered = $0 }
         .help(help)
         .accessibilityLabel(help)
     }
 }
 
 struct AppMark: View {
-    var size: CGFloat = 30
+    var size: CGFloat = 28
 
     var body: some View {
-        Image(systemName: "arrow.triangle.swap")
-            .font(.system(size: size * 0.45, weight: .semibold))
+        Image(systemName: "arrow.left.arrow.right")
+            .font(.system(size: size * 0.42, weight: .semibold))
             .foregroundStyle(Color.white)
             .frame(width: size, height: size)
-            .background(AppPalette.ink.gradient)
+            .background(AppPalette.ink)
             .clipShape(RoundedRectangle(cornerRadius: size * 0.28))
             .accessibilityHidden(true)
     }
 }
 
+/// The provider's logo on a light tile; monochrome, so rows stay calm.
 struct ProviderMark: View {
     let provider: AIProvider
     var size: CGFloat = 32
 
     var body: some View {
-        ProviderLogo(provider: provider, size: size * 0.5)
-            .foregroundStyle(provider.accent)
+        ProviderLogo(provider: provider, size: size * 0.48)
+            .foregroundStyle(AppPalette.ink)
             .frame(width: size, height: size)
-            .background(provider.softAccent)
-            .clipShape(RoundedRectangle(cornerRadius: size * 0.27))
+            .background(AppPalette.fill)
+            .clipShape(RoundedRectangle(cornerRadius: size * 0.28))
             .accessibilityLabel(provider.displayName)
     }
 }
@@ -168,22 +185,36 @@ struct PlanBadge: View {
     let plan: String
 
     var body: some View {
-        Text(plan.replacingOccurrences(of: "_", with: " ").uppercased())
-            .font(.system(size: 8, weight: .semibold))
-            .tracking(0.3)
+        Text(plan.replacingOccurrences(of: "_", with: " ").capitalized)
+            .font(.system(size: 10.5, weight: .medium))
             .foregroundStyle(AppPalette.secondaryInk)
             .lineLimit(1)
-            .padding(.horizontal, 5)
-            .padding(.vertical, 3)
-            .background(AppPalette.sidebar)
-            .clipShape(RoundedRectangle(cornerRadius: 4))
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(AppPalette.fill)
+            .clipShape(RoundedRectangle(cornerRadius: 5))
     }
 }
 
+struct ActiveBadge: View {
+    var body: some View {
+        HStack(spacing: 4) {
+            Circle().fill(AppPalette.success).frame(width: 6, height: 6)
+            Text("Active")
+        }
+        .font(.system(size: 10.5, weight: .medium))
+        .foregroundStyle(AppPalette.success)
+        .padding(.horizontal, 6)
+        .padding(.vertical, 2)
+        .background(AppPalette.success.opacity(0.09))
+        .clipShape(RoundedRectangle(cornerRadius: 5))
+    }
+}
+
+/// One limit: what is left, how full it is, and when it resets.
 struct UsageMeter: View {
-    var title: String? = nil
+    let title: String
     let window: UsageWindow?
-    let accent: Color
     var isStale = false
 
     var body: some View {
@@ -194,50 +225,44 @@ struct UsageMeter: View {
     }
 
     private func meter(reset: UsageResetDisplay) -> some View {
-        VStack(alignment: .leading, spacing: 5) {
-            HStack(alignment: .firstTextBaseline, spacing: 3) {
-                if let title {
-                    SectionCaption(title: title)
-                    Spacer(minLength: 4)
-                }
-                Text(window.map { "\(Int($0.remainingPercent.rounded()))%" } ?? "—")
-                    .font(.system(size: 12, weight: .semibold, design: .rounded))
-                    .monospacedDigit()
-                    .foregroundStyle(AppPalette.ink)
-                if window != nil {
-                    Text("left").font(.system(size: 9)).foregroundStyle(AppPalette.tertiaryInk)
-                }
-                if title == nil { Spacer(minLength: 0) }
-                if isStale, window != nil {
-                    Image(systemName: "clock").font(.system(size: 8)).foregroundStyle(AppPalette.tertiaryInk)
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline, spacing: 4) {
+                Text(title)
+                    .font(.system(size: 11))
+                    .foregroundStyle(AppPalette.secondaryInk)
+                    .lineLimit(1)
+                Spacer(minLength: 6)
+                if let window {
+                    Text("\(Int(window.remainingPercent.rounded()))%")
+                        .font(.system(size: 12.5, weight: .semibold))
+                        .monospacedDigit()
+                        .foregroundStyle(AppPalette.ink)
+                    Text("left").font(.system(size: 11)).foregroundStyle(AppPalette.tertiaryInk)
+                } else {
+                    Text("—").font(.system(size: 12.5, weight: .semibold)).foregroundStyle(AppPalette.tertiaryInk)
                 }
             }
             GeometryReader { geometry in
                 ZStack(alignment: .leading) {
-                    Capsule().fill(AppPalette.line.opacity(0.65))
-                    Capsule().fill(barColor)
-                        .frame(width: geometry.size.width * (window?.remainingPercent ?? 0) / 100)
+                    Capsule().fill(AppPalette.track)
+                    if let window {
+                        Capsule().fill(AppPalette.meter(remaining: window.remainingPercent))
+                            .frame(width: geometry.size.width * window.remainingPercent / 100)
+                    }
                 }
             }
-            .frame(height: 4)
+            .frame(height: 5)
             Text(reset.compactText)
-                .font(.system(size: 9))
+                .font(.system(size: 11))
                 .monospacedDigit()
-                .foregroundStyle(window?.remainingPercent == 0 ? AppPalette.warning : AppPalette.secondaryInk)
+                .foregroundStyle(window?.remainingPercent == 0 ? AppPalette.critical : AppPalette.tertiaryInk)
                 .lineLimit(1)
                 .minimumScaleFactor(0.85)
         }
-        .opacity(isStale ? 0.65 : 1)
+        .opacity(isStale ? 0.55 : 1)
         .help(reset.detailText)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(window.map { "\(Int($0.remainingPercent.rounded())) percent remaining. \(reset.detailText)" } ?? reset.detailText)
-    }
-
-    private var barColor: Color {
-        guard let remaining = window?.remainingPercent else { return AppPalette.line }
-        if remaining <= 10 { return Color(red: 0.76, green: 0.29, blue: 0.25) }
-        if remaining <= 30 { return AppPalette.warning }
-        return accent
+        .accessibilityLabel(window.map { "\(title): \(Int($0.remainingPercent.rounded())) percent left. \(reset.detailText)" } ?? "\(title): \(reset.detailText)")
     }
 }
 
@@ -245,9 +270,40 @@ struct SectionCaption: View {
     let title: String
 
     var body: some View {
-        Text(title.uppercased())
-            .font(.system(size: 9, weight: .medium))
-            .tracking(1.1)
-            .foregroundStyle(AppPalette.tertiaryInk)
+        Text(title)
+            .font(.system(size: 11.5, weight: .medium))
+            .foregroundStyle(AppPalette.secondaryInk)
+    }
+}
+
+/// "Live" while usage is under a minute old, then how long ago it was read.
+struct FreshnessLabel: View {
+    let fetchedAt: Date?
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 15)) { context in
+            label(now: context.date)
+        }
+    }
+
+    @ViewBuilder
+    private func label(now: Date) -> some View {
+        if let fetchedAt, fetchedAt > .distantPast {
+            let age = now.timeIntervalSince(fetchedAt)
+            if age < 60 {
+                HStack(spacing: 4) {
+                    Circle().fill(AppPalette.success).frame(width: 5, height: 5)
+                    Text("Live")
+                }
+                .foregroundStyle(AppPalette.success)
+                .help("Updated \(fetchedAt.formatted(date: .omitted, time: .standard))")
+            } else {
+                Text(age < 3600 ? "\(Int(age / 60)) min ago" : fetchedAt.formatted(date: .abbreviated, time: .shortened))
+                    .foregroundStyle(AppPalette.tertiaryInk)
+                    .help("Updated \(fetchedAt.formatted(date: .complete, time: .standard))")
+            }
+        } else {
+            Text("Not checked yet").foregroundStyle(AppPalette.tertiaryInk)
+        }
     }
 }
