@@ -12,7 +12,7 @@ An independent project, not an official OpenAI or Anthropic app.
 
 ## Download and install
 
-[Download AI Switch 0.5.1 — universal DMG](https://github.com/praysimanjuntak/ai-switch/releases/download/v0.5.1/AI-Switch-0.5.1-macOS-universal-beta.dmg) · [SHA-256 checksum](https://github.com/praysimanjuntak/ai-switch/releases/download/v0.5.1/AI-Switch-0.5.1-macOS-universal-beta.dmg.sha256) · [Release notes](https://github.com/praysimanjuntak/ai-switch/releases/tag/v0.5.1)
+[Download AI Switch 0.6.0 — universal DMG](https://github.com/praysimanjuntak/ai-switch/releases/download/v0.6.0/AI-Switch-0.6.0-macOS-universal-beta.dmg) · [SHA-256 checksum](https://github.com/praysimanjuntak/ai-switch/releases/download/v0.6.0/AI-Switch-0.6.0-macOS-universal-beta.dmg.sha256) · [Release notes](https://github.com/praysimanjuntak/ai-switch/releases/tag/v0.6.0)
 
 1. Open the DMG and drag **AI Switch** to **Applications**.
 2. Eject the image, then launch the installed app.
@@ -26,7 +26,7 @@ You do not need Xcode, Swift, or an Apple Developer membership to run the app. T
 To verify the download, place the DMG and checksum in the same folder and run:
 
 ```sh
-shasum -a 256 -c AI-Switch-0.5.1-macOS-universal-beta.dmg.sha256
+shasum -a 256 -c AI-Switch-0.6.0-macOS-universal-beta.dmg.sha256
 ```
 
 ## What works
