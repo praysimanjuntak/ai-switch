@@ -1,10 +1,10 @@
 import SwiftUI
 
-/// Widths every row shares, so meters line up down the list.
+/// Widths every row shares, so the usage bars line up down the list.
 enum AccountColumns {
-    static let meter: CGFloat = 148
+    static let identity: CGFloat = 270
     static let action: CGFloat = 112
-    static let spacing: CGFloat = 26
+    static let spacing: CGFloat = 28
 }
 
 struct AccountRowView: View {
@@ -30,13 +30,9 @@ struct AccountRowView: View {
     var body: some View {
         HStack(alignment: .center, spacing: AccountColumns.spacing) {
             identity
-                .frame(maxWidth: .infinity, alignment: .leading)
-            UsageMeter(title: "5-hour", window: profile.usage?.session, isStale: isStale)
-                .frame(width: AccountColumns.meter)
-            UsageMeter(title: "Weekly", window: profile.usage?.weekly, isStale: isStale)
-                .frame(width: AccountColumns.meter)
-            modelMeters
-                .frame(width: AccountColumns.meter)
+                .frame(width: AccountColumns.identity, alignment: .leading)
+            limits
+                .frame(maxWidth: .infinity)
             actions
                 .frame(width: AccountColumns.action, alignment: .trailing)
         }
@@ -97,18 +93,14 @@ struct AccountRowView: View {
         }
     }
 
-    /// Per-model weekly limits, e.g. Claude's Fable bucket. Stacked so the
-    /// columns after them stay aligned.
-    @ViewBuilder
-    private var modelMeters: some View {
-        let scoped = profile.usage?.scoped ?? []
-        if scoped.isEmpty {
-            Color.clear.frame(height: 1)
-        } else {
-            VStack(alignment: .leading, spacing: 12) {
-                ForEach(scoped, id: \.name) { limit in
-                    UsageMeter(title: "\(limit.name) weekly", window: limit.window, isStale: isStale)
-                }
+    /// Every limit as its own line, per-model weekly limits (e.g. Claude's
+    /// Fable bucket) last.
+    private var limits: some View {
+        VStack(spacing: 10) {
+            UsageMeter(title: "5-hour", window: profile.usage?.session, isStale: isStale)
+            UsageMeter(title: "Weekly", window: profile.usage?.weekly, isStale: isStale)
+            ForEach(profile.usage?.scoped ?? [], id: \.name) { limit in
+                UsageMeter(title: "\(limit.name) weekly", window: limit.window, isStale: isStale)
             }
         }
     }

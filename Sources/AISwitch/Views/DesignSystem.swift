@@ -18,6 +18,15 @@ extension AIProvider {
         }
     }
 
+    /// The mark's own color: OpenAI's is black; Claude's is the orange Claude
+    /// Code itself uses for its brand.
+    var markColor: Color {
+        switch self {
+        case .codex: AppPalette.ink
+        case .claude: Color(red: 215 / 255, green: 119 / 255, blue: 87 / 255)
+        }
+    }
+
     private static let openAI = templateImage("openai", extension: "svg")
     private static let anthropic = templateImage("anthropic", extension: "png")
 
@@ -58,14 +67,15 @@ enum AppPalette {
     static let secondaryInk = Color(white: 0.43)
     static let tertiaryInk = Color(white: 0.63)
     static let success = Color(red: 0.14, green: 0.62, blue: 0.37)
+    static let caution = Color(red: 0.92, green: 0.70, blue: 0.03)
     static let warning = Color(red: 0.86, green: 0.53, blue: 0.09)
     static let critical = Color(red: 0.87, green: 0.25, blue: 0.22)
 
-    /// A limit's bar: neutral while there is room, amber when running low, red near the end.
+    /// A limit's bar: green while plenty is left, yellow as it runs down, red near the end.
     static func meter(remaining: Double) -> Color {
-        if remaining <= 10 { return critical }
-        if remaining <= 30 { return warning }
-        return ink
+        if remaining < 20 { return critical }
+        if remaining < 50 { return caution }
+        return success
     }
 }
 
@@ -166,14 +176,14 @@ struct AppMark: View {
     }
 }
 
-/// The provider's logo on a light tile; monochrome, so rows stay calm.
+/// The provider's logo in its own color on a light tile.
 struct ProviderMark: View {
     let provider: AIProvider
     var size: CGFloat = 32
 
     var body: some View {
         ProviderLogo(provider: provider, size: size * 0.48)
-            .foregroundStyle(AppPalette.ink)
+            .foregroundStyle(provider.markColor)
             .frame(width: size, height: size)
             .background(AppPalette.fill)
             .clipShape(RoundedRectangle(cornerRadius: size * 0.28))
@@ -213,56 +223,93 @@ struct ActiveBadge: View {
 
 /// One limit: what is left, how full it is, and when it resets.
 struct UsageMeter: View {
+    enum Layout {
+        /// One line: name, a long bar, what is left, and the reset time.
+        case row
+        /// Name and what is left above the bar, the reset time below; for narrow panels.
+        case stacked
+    }
+
     let title: String
     let window: UsageWindow?
     var isStale = false
+    var layout: Layout = .row
 
     var body: some View {
         // Update local-day and elapsed-reset labels without fetching usage or credentials.
         TimelineView(.periodic(from: .now, by: 60)) { context in
-            meter(reset: UsageResetDisplay(window: window, isStale: isStale, now: context.date))
-        }
-    }
-
-    private func meter(reset: UsageResetDisplay) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(alignment: .firstTextBaseline, spacing: 4) {
-                Text(title)
-                    .font(.system(size: 11))
-                    .foregroundStyle(AppPalette.secondaryInk)
-                    .lineLimit(1)
-                Spacer(minLength: 6)
-                if let window {
-                    Text("\(Int(window.remainingPercent.rounded()))%")
-                        .font(.system(size: 12.5, weight: .semibold))
-                        .monospacedDigit()
-                        .foregroundStyle(AppPalette.ink)
-                    Text("left").font(.system(size: 11)).foregroundStyle(AppPalette.tertiaryInk)
-                } else {
-                    Text("—").font(.system(size: 12.5, weight: .semibold)).foregroundStyle(AppPalette.tertiaryInk)
-                }
-            }
-            GeometryReader { geometry in
-                ZStack(alignment: .leading) {
-                    Capsule().fill(AppPalette.track)
-                    if let window {
-                        Capsule().fill(AppPalette.meter(remaining: window.remainingPercent))
-                            .frame(width: geometry.size.width * window.remainingPercent / 100)
+            let reset = UsageResetDisplay(window: window, isStale: isStale, now: context.date)
+            Group {
+                switch layout {
+                case .row:
+                    HStack(spacing: 12) {
+                        name.frame(width: 88, alignment: .leading)
+                        bar
+                        remaining.frame(width: 66, alignment: .trailing)
+                        resetTime(reset).frame(width: 118, alignment: .leading)
+                    }
+                    .frame(height: 18)
+                case .stacked:
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack(alignment: .firstTextBaseline, spacing: 4) {
+                            name
+                            Spacer(minLength: 6)
+                            remaining
+                        }
+                        bar
+                        resetTime(reset)
                     }
                 }
             }
-            .frame(height: 5)
-            Text(reset.compactText)
-                .font(.system(size: 11))
-                .monospacedDigit()
-                .foregroundStyle(window?.remainingPercent == 0 ? AppPalette.critical : AppPalette.tertiaryInk)
-                .lineLimit(1)
-                .minimumScaleFactor(0.85)
+            .opacity(isStale ? 0.55 : 1)
+            .help(reset.detailText)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(window.map { "\(title): \(Int($0.remainingPercent.rounded())) percent left. \(reset.detailText)" } ?? "\(title): \(reset.detailText)")
         }
-        .opacity(isStale ? 0.55 : 1)
-        .help(reset.detailText)
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(window.map { "\(title): \(Int($0.remainingPercent.rounded())) percent left. \(reset.detailText)" } ?? "\(title): \(reset.detailText)")
+    }
+
+    private var name: some View {
+        Text(title)
+            .font(.system(size: 11.5))
+            .foregroundStyle(AppPalette.secondaryInk)
+            .lineLimit(1)
+    }
+
+    private var bar: some View {
+        GeometryReader { geometry in
+            ZStack(alignment: .leading) {
+                Capsule().fill(AppPalette.track)
+                if let window, window.remainingPercent > 0 {
+                    // A sliver stays visible however little is left.
+                    Capsule().fill(AppPalette.meter(remaining: window.remainingPercent))
+                        .frame(width: max(geometry.size.width * window.remainingPercent / 100, 6))
+                }
+            }
+        }
+        .frame(height: 6)
+    }
+
+    private var remaining: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 3) {
+            if let window {
+                Text("\(Int(window.remainingPercent.rounded()))%")
+                    .font(.system(size: 12.5, weight: .semibold))
+                    .monospacedDigit()
+                    .foregroundStyle(AppPalette.ink)
+                Text("left").font(.system(size: 11)).foregroundStyle(AppPalette.tertiaryInk)
+            } else {
+                Text("—").font(.system(size: 12.5, weight: .semibold)).foregroundStyle(AppPalette.tertiaryInk)
+            }
+        }
+    }
+
+    private func resetTime(_ reset: UsageResetDisplay) -> some View {
+        Text(reset.compactText)
+            .font(.system(size: 11))
+            .monospacedDigit()
+            .foregroundStyle(window?.remainingPercent == 0 ? AppPalette.critical : AppPalette.tertiaryInk)
+            .lineLimit(1)
+            .minimumScaleFactor(0.85)
     }
 }
 
