@@ -57,7 +57,7 @@ extension AIProvider {
 /// White surfaces, neutral grays, and color only where it carries meaning.
 enum AppPalette {
     static let canvas = Color.white
-    /// Hovered rows and quiet controls.
+    /// Selected options and hovered quiet controls.
     static let raised = Color(white: 0.972)
     /// Logo tiles, badges, and the selected filter's track.
     static let fill = Color(white: 0.953)
@@ -74,7 +74,7 @@ enum AppPalette {
     static let warning = Color(red: 0.86, green: 0.53, blue: 0.09)
     static let critical = Color(red: 0.87, green: 0.25, blue: 0.22)
 
-    /// A limit's bar: green while plenty is left, yellow as it runs down, red near the end.
+    /// A limit's ring: green while plenty is left, yellow as it runs down, red near the end.
     static func meter(remaining: Double) -> Color {
         if remaining < 20 { return critical }
         if remaining < 50 { return caution }
@@ -244,44 +244,46 @@ struct OmpBadge: View {
     }
 }
 
-/// One limit: what is left, how full it is, and when it resets.
-struct UsageMeter: View {
-    enum Layout {
-        /// One line: name, a long bar, what is left, and the reset time.
-        case row
-        /// Name and what is left above the bar, the reset time below; for narrow panels.
-        case stacked
+/// One limit as a ring: the arc is what is left, green while plenty is left,
+/// yellow as it runs down, red near the end, with the number inside.
+struct UsageRing: View {
+    struct Limit: Identifiable {
+        let title: String
+        let window: UsageWindow?
+        var id: String { title }
+    }
+
+    /// The limits an account shows, at most three: 5-hour, weekly, then a
+    /// per-model weekly limit such as Claude's Fable bucket.
+    static func limits(of usage: UsageSnapshot?) -> [Limit] {
+        let fixed = [Limit(title: "5-hour", window: usage?.session), Limit(title: "Weekly", window: usage?.weekly)]
+        let scoped = (usage?.scoped ?? []).map { Limit(title: "\($0.name) weekly", window: $0.window) }
+        return Array((fixed + scoped).prefix(3))
     }
 
     let title: String
     let window: UsageWindow?
     var isStale = false
-    var layout: Layout = .row
+    var diameter: CGFloat = 70
+    var lineWidth: CGFloat = 6.5
 
     var body: some View {
         // Update local-day and elapsed-reset labels without fetching usage or credentials.
         TimelineView(.periodic(from: .now, by: 60)) { context in
             let reset = UsageResetDisplay(window: window, isStale: isStale, now: context.date)
-            Group {
-                switch layout {
-                case .row:
-                    HStack(spacing: 12) {
-                        name.frame(width: 88, alignment: .leading)
-                        bar
-                        remaining.frame(width: 66, alignment: .trailing)
-                        resetTime(reset).frame(width: 118, alignment: .leading)
-                    }
-                    .frame(height: 18)
-                case .stacked:
-                    VStack(alignment: .leading, spacing: 6) {
-                        HStack(alignment: .firstTextBaseline, spacing: 4) {
-                            name
-                            Spacer(minLength: 6)
-                            remaining
-                        }
-                        bar
-                        resetTime(reset)
-                    }
+            VStack(spacing: 8) {
+                ring
+                VStack(spacing: 2) {
+                    Text(title)
+                        .font(.system(size: 11.5, weight: .medium))
+                        .foregroundStyle(AppPalette.secondaryInk)
+                        .lineLimit(1)
+                    Text(reset.compactText)
+                        .font(.system(size: 10.5))
+                        .monospacedDigit()
+                        .foregroundStyle(window?.remainingPercent == 0 ? AppPalette.critical : AppPalette.tertiaryInk)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
                 }
             }
             .opacity(isStale ? 0.55 : 1)
@@ -291,48 +293,33 @@ struct UsageMeter: View {
         }
     }
 
-    private var name: some View {
-        Text(title)
-            .font(.system(size: 11.5))
-            .foregroundStyle(AppPalette.secondaryInk)
-            .lineLimit(1)
-    }
-
-    private var bar: some View {
-        GeometryReader { geometry in
-            ZStack(alignment: .leading) {
-                Capsule().fill(AppPalette.track)
-                if let window, window.remainingPercent > 0 {
-                    // A sliver stays visible however little is left.
-                    Capsule().fill(AppPalette.meter(remaining: window.remainingPercent))
-                        .frame(width: max(geometry.size.width * window.remainingPercent / 100, 6))
-                }
+    private var ring: some View {
+        ZStack {
+            Circle().inset(by: lineWidth / 2).stroke(AppPalette.track, lineWidth: lineWidth)
+            if let window, window.remainingPercent > 0 {
+                // From the top, clockwise; a sliver stays visible however little is left.
+                Circle().inset(by: lineWidth / 2)
+                    .trim(from: 0, to: max(window.remainingPercent / 100, 0.02))
+                    .stroke(AppPalette.meter(remaining: window.remainingPercent),
+                            style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
+                    .rotationEffect(.degrees(-90))
             }
-        }
-        .frame(height: 6)
-    }
-
-    private var remaining: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 3) {
             if let window {
                 Text("\(Int(window.remainingPercent.rounded()))%")
-                    .font(.system(size: 12.5, weight: .semibold))
+                    // One size for every value, small enough that "100%" clears the ring.
+                    .font(.system(size: diameter * 0.23, weight: .semibold))
                     .monospacedDigit()
                     .foregroundStyle(AppPalette.ink)
-                Text("left").font(.system(size: 11)).foregroundStyle(AppPalette.tertiaryInk)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+                    .padding(.horizontal, lineWidth + 6)
             } else {
-                Text("—").font(.system(size: 12.5, weight: .semibold)).foregroundStyle(AppPalette.tertiaryInk)
+                Text("—")
+                    .font(.system(size: diameter * 0.23, weight: .semibold))
+                    .foregroundStyle(AppPalette.tertiaryInk)
             }
         }
-    }
-
-    private func resetTime(_ reset: UsageResetDisplay) -> some View {
-        Text(reset.compactText)
-            .font(.system(size: 11))
-            .monospacedDigit()
-            .foregroundStyle(window?.remainingPercent == 0 ? AppPalette.critical : AppPalette.tertiaryInk)
-            .lineLimit(1)
-            .minimumScaleFactor(0.85)
+        .frame(width: diameter, height: diameter)
     }
 }
 
@@ -349,7 +336,7 @@ struct SectionCaption: View {
 /// "Live" while usage is under a minute old, then how long ago it was read.
 struct FreshnessLabel: View {
     let fetchedAt: Date?
-    /// Says "Updated …" where the label stands on its own, away from the meters.
+    /// Says "Updated …" where the label stands on its own, away from the rings.
     var labelled = false
 
     var body: some View {

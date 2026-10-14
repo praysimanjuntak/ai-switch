@@ -180,7 +180,7 @@ enum AISwitchError: LocalizedError, Sendable {
         case .claudeSessionExpired:
             "Claude's sign-in for this account needs renewing. Use Renew sign-in, or start a Claude Code session with it active, then refresh."
         case .usageRateLimited(let provider):
-            "\(provider.displayName) is limiting how often this account's usage can be checked. AI Switch checks again later; the meters show the last usage."
+            "\(provider.displayName) is limiting how often this account's usage can be checked. AI Switch checks again later; the rings show the last usage."
         }
     }
 }

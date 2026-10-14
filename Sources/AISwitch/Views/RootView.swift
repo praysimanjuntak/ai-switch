@@ -203,28 +203,27 @@ struct RootView: View {
                     if !others.isEmpty { section(active.isEmpty ? "Accounts" : "Other accounts", profiles: others) }
                 }
                 .padding(.vertical, 8)
+                // Room for hover shadows; the negative padding keeps cards aligned with the header.
+                .padding(.horizontal, 12)
             }
+            .padding(.horizontal, -12)
             .scrollIndicators(.automatic)
         }
     }
 
+    private static let columns = Array(repeating: GridItem(.flexible(), spacing: 14, alignment: .top), count: 3)
+
     private func section(_ title: String, profiles: [AccountProfile]) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 10) {
             SectionCaption(title: title).padding(.leading, 2)
-            VStack(spacing: 0) {
-                ForEach(Array(profiles.enumerated()), id: \.element.id) { index, profile in
-                    if index > 0 {
-                        Rectangle().fill(AppPalette.line).frame(height: 1).padding(.leading, 64)
-                    }
-                    row(for: profile)
-                }
+            LazyVGrid(columns: Self.columns, alignment: .leading, spacing: 14) {
+                ForEach(profiles) { card(for: $0) }
             }
-            .surface(radius: 12)
         }
     }
 
-    private func row(for profile: AccountProfile) -> some View {
-        AccountRowView(
+    private func card(for profile: AccountProfile) -> some View {
+        AccountCardView(
             profile: profile,
             isActive: store.isActive(profile),
             isSwitching: store.switchingProfileID == profile.id,
@@ -280,7 +279,7 @@ struct RootView: View {
                 }
             }
             Spacer()
-            Text(store.isRefreshing ? "Checking usage…" : "Codex usage is live; all accounts are checked every minute")
+            Text(store.isRefreshing ? "Checking usage…" : "Codex usage is live; all accounts are checked every 5 minutes")
             Label("Credentials stay on this Mac", systemImage: "lock")
                 .labelStyle(.titleAndIcon)
         }

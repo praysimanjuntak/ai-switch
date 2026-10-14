@@ -598,7 +598,7 @@ final class AccountStore: ObservableObject {
             await self?.refreshAll()
             while !Task.isCancelled {
                 // Codex usage also arrives live from its session logs; see scheduleCodexFeed.
-                try? await Task.sleep(for: .seconds(60))
+                try? await Task.sleep(for: .seconds(300))
                 guard !Task.isCancelled else { break }
                 await self?.refreshAll()
             }
@@ -606,7 +606,7 @@ final class AccountStore: ObservableObject {
     }
 
     /// Usage Codex records after each turn on this Mac shows up within seconds.
-    /// Provider checks run every minute; one Anthropic refuses backs off on its own.
+    /// Provider checks run every five minutes: their usage endpoints are rate-limited.
     private func scheduleCodexFeed() {
         codexFeedTask = Task { [weak self] in
             while !Task.isCancelled {

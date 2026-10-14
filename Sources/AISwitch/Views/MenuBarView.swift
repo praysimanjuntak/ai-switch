@@ -105,11 +105,10 @@ private struct MenuProviderCard: View {
                 switchMenu
             }
             if let profile {
-                VStack(spacing: 12) {
-                    UsageMeter(title: "5-hour", window: profile.usage?.session, isStale: isStale, layout: .stacked)
-                    UsageMeter(title: "Weekly", window: profile.usage?.weekly, isStale: isStale, layout: .stacked)
-                    ForEach(profile.usage?.scoped ?? [], id: \.name) { limit in
-                        UsageMeter(title: "\(limit.name) weekly", window: limit.window, isStale: isStale, layout: .stacked)
+                HStack(alignment: .top, spacing: 4) {
+                    ForEach(UsageRing.limits(of: profile.usage)) { limit in
+                        UsageRing(title: limit.title, window: limit.window, isStale: isStale, diameter: 62, lineWidth: 6)
+                            .frame(maxWidth: .infinity)
                     }
                 }
                 if let issue = profile.authIssue {

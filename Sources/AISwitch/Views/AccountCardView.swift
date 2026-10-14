@@ -1,13 +1,7 @@
 import SwiftUI
 
-/// Widths every row shares, so the usage bars line up down the list.
-enum AccountColumns {
-    static let identity: CGFloat = 270
-    static let action: CGFloat = 112
-    static let spacing: CGFloat = 28
-}
-
-struct AccountRowView: View {
+/// One account in the grid: who it is, its limits as rings, its resets, and Switch.
+struct AccountCardView: View {
     /// What omp does with this account while "Switch omp too" is on.
     enum OmpState {
         case none
@@ -38,19 +32,21 @@ struct AccountRowView: View {
     private var isStale: Bool { profile.authIssue != nil }
 
     var body: some View {
-        HStack(alignment: .center, spacing: AccountColumns.spacing) {
-            identity
-                .frame(width: AccountColumns.identity, alignment: .leading)
-            limits
-                .frame(maxWidth: .infinity)
-            actions
-                .frame(width: AccountColumns.action, alignment: .trailing)
+        VStack(alignment: .leading, spacing: 18) {
+            header
+            rings
+            footer
         }
-        .padding(.horizontal, 18)
-        .padding(.vertical, 15)
-        .background(isHovered ? AppPalette.raised : AppPalette.canvas)
-        .contentShape(Rectangle())
+        .padding(.horizontal, 16)
+        .padding(.top, 16)
+        .padding(.bottom, 12)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .background(AppPalette.canvas)
+        .clipShape(RoundedRectangle(cornerRadius: 14))
+        .overlay { RoundedRectangle(cornerRadius: 14).strokeBorder(AppPalette.line, lineWidth: 1) }
+        .shadow(color: .black.opacity(isHovered ? 0.07 : 0), radius: 12, y: 4)
         .onHover { isHovered = $0 }
+        .animation(.easeOut(duration: 0.15), value: isHovered)
         .alert("Rename account", isPresented: $showsRename) {
             TextField("Account name", text: $editedName)
             Button("Cancel", role: .cancel) {}
@@ -69,21 +65,16 @@ struct AccountRowView: View {
         }
     }
 
-    private var identity: some View {
-        HStack(spacing: 12) {
-            ProviderMark(provider: profile.provider, size: 34)
+    private var header: some View {
+        HStack(alignment: .top, spacing: 12) {
+            ProviderMark(provider: profile.provider, size: 36)
                 .help(profile.provider.displayName)
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 6) {
-                    Text(profile.displayName)
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(AppPalette.ink)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                        .layoutPriority(1)
-                    if isActive { ActiveBadge().fixedSize() }
-                    if let plan = profile.plan, !plan.isEmpty { PlanBadge(plan: plan).fixedSize() }
-                }
+            VStack(alignment: .leading, spacing: 3) {
+                Text(profile.displayName)
+                    .font(.system(size: 13.5, weight: .semibold))
+                    .foregroundStyle(AppPalette.ink)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
                 if profile.authIssue != nil {
                     attention
                 } else {
@@ -94,39 +85,75 @@ struct AccountRowView: View {
                         .truncationMode(.middle)
                         .help(profile.subtitle)
                 }
-                HStack(spacing: 8) {
-                    if let resets = profile.usage?.resets {
-                        LimitResetsButton(accountName: profile.displayName, provider: profile.provider,
-                                          resets: resets, use: useReset)
-                    }
-                    FreshnessLabel(fetchedAt: profile.usage?.fetchedAt, labelled: true)
-                        .font(.system(size: 11))
-                    switch omp {
-                    case .preferred:
-                        OmpBadge().fixedSize()
-                    case .notSignedIn:
-                        Text("Not in omp")
-                            .font(.system(size: 11))
-                            .foregroundStyle(AppPalette.tertiaryInk)
-                            .help("omp keeps choosing its own account: sign \(profile.displayName) in to omp with /login so omp can use it.")
-                    case .none:
-                        EmptyView()
-                    }
-                }
-                .padding(.top, 2)
+                badges.padding(.top, 4)
+            }
+            Spacer(minLength: 4)
+            menu
+        }
+    }
+
+    /// Always one line tall, so cards line up whether or not they carry badges.
+    private var badges: some View {
+        HStack(spacing: 5) {
+            if isActive { ActiveBadge() }
+            if let plan = profile.plan, !plan.isEmpty { PlanBadge(plan: plan) }
+            switch omp {
+            case .preferred:
+                OmpBadge()
+            case .notSignedIn:
+                Text("Not in omp")
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(AppPalette.tertiaryInk)
+                    .help("omp keeps choosing its own account: sign \(profile.displayName) in to omp with /login so omp can use it.")
+            case .none:
+                EmptyView()
+            }
+        }
+        .fixedSize()
+        .frame(height: 18, alignment: .leading)
+    }
+
+    private var rings: some View {
+        HStack(alignment: .top, spacing: 6) {
+            ForEach(UsageRing.limits(of: profile.usage)) { limit in
+                UsageRing(title: limit.title, window: limit.window, isStale: isStale)
+                    .frame(maxWidth: .infinity)
             }
         }
     }
 
-    /// Every limit as its own line, per-model weekly limits (e.g. Claude's
-    /// Fable bucket) last.
-    private var limits: some View {
-        VStack(spacing: 10) {
-            UsageMeter(title: "5-hour", window: profile.usage?.session, isStale: isStale)
-            UsageMeter(title: "Weekly", window: profile.usage?.weekly, isStale: isStale)
-            ForEach(profile.usage?.scoped ?? [], id: \.name) { limit in
-                UsageMeter(title: "\(limit.name) weekly", window: limit.window, isStale: isStale)
+    private var footer: some View {
+        HStack(spacing: 8) {
+            if let resets = profile.usage?.resets {
+                LimitResetsButton(accountName: profile.displayName, provider: profile.provider,
+                                  resets: resets, use: useReset)
             }
+            FreshnessLabel(fetchedAt: profile.usage?.fetchedAt, labelled: true)
+                .font(.system(size: 11))
+                .lineLimit(1)
+            Spacer(minLength: 6)
+            action
+        }
+        .frame(height: 28)
+        .padding(.top, 10)
+        .overlay(alignment: .top) {
+            Rectangle().fill(AppPalette.line).frame(height: 1).padding(.horizontal, -16)
+        }
+    }
+
+    @ViewBuilder
+    private var action: some View {
+        if isSwitching || isRefreshing {
+            HStack(spacing: 6) {
+                ProgressView().controlSize(.small).scaleEffect(0.7)
+                Text(isSwitching ? "Switching" : "Updating")
+            }
+            .font(.system(size: 11.5))
+            .foregroundStyle(AppPalette.secondaryInk)
+        } else if !isActive {
+            Button("Switch", action: activate)
+                .buttonStyle(AppButtonStyle(compact: true))
+                .help("Use \(profile.displayName) for new \(profile.provider.shortName) sessions")
         }
     }
 
@@ -142,24 +169,6 @@ struct AccountRowView: View {
         .buttonStyle(.plain)
         .help(profile.authIssue ?? "")
         .popover(isPresented: $showsIssue, arrowEdge: .bottom) { issuePopover }
-    }
-
-    private var actions: some View {
-        HStack(spacing: 4) {
-            if isSwitching || isRefreshing {
-                HStack(spacing: 6) {
-                    ProgressView().controlSize(.small).scaleEffect(0.7)
-                    Text(isSwitching ? "Switching" : "Updating")
-                }
-                .font(.system(size: 11.5))
-                .foregroundStyle(AppPalette.secondaryInk)
-            } else if !isActive {
-                Button("Switch", action: activate)
-                    .buttonStyle(AppButtonStyle(compact: true))
-                    .help("Use \(profile.displayName) for new \(profile.provider.shortName) sessions")
-            }
-            menu
-        }
     }
 
     private var menu: some View {
@@ -198,7 +207,7 @@ struct AccountRowView: View {
                 .foregroundStyle(AppPalette.secondaryInk)
                 .fixedSize(horizontal: false, vertical: true)
             if profile.usage != nil {
-                Text("The meters show the last usage AI Switch saw.")
+                Text("The rings show the last usage AI Switch saw.")
                     .font(.system(size: 11))
                     .foregroundStyle(AppPalette.tertiaryInk)
             }

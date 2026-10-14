@@ -1,6 +1,6 @@
 import Foundation
 
-/// Keeps the compact meter label and its full, accessible reset time consistent.
+/// Keeps a ring's compact reset label and its full, accessible reset time consistent.
 struct UsageResetDisplay {
     let compactText: String
     let detailText: String
