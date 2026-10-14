@@ -12,21 +12,27 @@ An independent project, not an official OpenAI or Anthropic app.
 
 ## Download and install
 
-[Download AI Switch 0.7.0 — universal DMG](https://github.com/praysimanjuntak/ai-switch/releases/download/v0.7.0/AI-Switch-0.7.0-macOS-universal-beta.dmg) · [SHA-256 checksum](https://github.com/praysimanjuntak/ai-switch/releases/download/v0.7.0/AI-Switch-0.7.0-macOS-universal-beta.dmg.sha256) · [Release notes](https://github.com/praysimanjuntak/ai-switch/releases/tag/v0.7.0)
+[Download AI Switch 0.8.0 — universal DMG](https://github.com/praysimanjuntak/ai-switch/releases/download/v0.8.0/AI-Switch-0.8.0-macOS-universal-beta.dmg) · [SHA-256 checksum](https://github.com/praysimanjuntak/ai-switch/releases/download/v0.8.0/AI-Switch-0.8.0-macOS-universal-beta.dmg.sha256) · [Release notes](https://github.com/praysimanjuntak/ai-switch/releases/tag/v0.8.0)
 
 1. Open the DMG and drag **AI Switch** to **Applications**.
 2. Eject the image, then launch the installed app.
 3. Install the Codex and/or Claude Code CLI separately if needed.
 4. Use **Import** for an existing account or **Add account** to sign in with your own account.
 
-**This beta is ad-hoc signed and is not notarized by Apple.** macOS may block a downloaded copy. Only if you trust the source, try opening the app, then use **System Settings → Privacy & Security → Open Anyway** and confirm. Managed Macs may restrict this. Do not disable Gatekeeper system-wide. See [Apple's guidance](https://support.apple.com/en-us/102445).
+Instead of steps 1 and 2, you can install it with [Homebrew](https://brew.sh) (0.8.0 and later) and update it later with `brew upgrade --cask ai-switch`:
+
+```sh
+brew install --cask praysimanjuntak/tap/ai-switch
+```
+
+**This beta is ad-hoc signed and is not notarized by Apple.** macOS may block a downloaded copy, including one installed with Homebrew. Only if you trust the source, try opening the app, then use **System Settings → Privacy & Security → Open Anyway** and confirm. Managed Macs may restrict this. Do not disable Gatekeeper system-wide. See [Apple's guidance](https://support.apple.com/en-us/102445).
 
 You do not need Xcode, Swift, or an Apple Developer membership to run the app. The download contains no saved accounts or credentials. Intel is cross-compiled; runtime testing on a physical Intel Mac and every supported macOS version is still needed.
 
 To verify the download, place the DMG and checksum in the same folder and run:
 
 ```sh
-shasum -a 256 -c AI-Switch-0.7.0-macOS-universal-beta.dmg.sha256
+shasum -a 256 -c AI-Switch-0.8.0-macOS-universal-beta.dmg.sha256
 ```
 
 ## What works
