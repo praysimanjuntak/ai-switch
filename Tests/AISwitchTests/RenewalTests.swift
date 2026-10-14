@@ -345,6 +345,31 @@ func failedClaudeRenewalReportsCLIMessage() async throws {
     }
 }
 
+@Test("A failed Claude renewal still brings back the credential Claude Code moved into the Keychain")
+func failedClaudeRenewalKeepsCredential() async throws {
+    let fake = try FakeCLI()
+    defer { try? fake.remove() }
+    // Claude Code moves the profile's credential into the Keychain item keyed by
+    // its config directory when it starts, then fails: here, while offline.
+    let keychain = fake.directory.appendingPathComponent("keychain")
+    let claude = try fake.install("claude", script: """
+    #!/bin/sh
+    mv "$CLAUDE_CONFIG_DIR/.credentials.json" "\(keychain.path)"
+    echo "Can't reach the API server (ENOTFOUND)" >&2
+    exit 1
+    """)
+    let credential = Data(#"{"claudeAiOauth":{"accessToken":"expired","refreshToken":"r1"}}"#.utf8)
+    try FileManager.default.writeOwnerOnly(credential, to: ClaudeCredentialStore.credentialURL(configDirectory: fake.profile))
+
+    await #expect(throws: AISwitchError.self) {
+        try await AccountLoginService.renew(provider: .claude, directory: fake.profile, executable: claude) { directory in
+            guard FileManager.default.fileExists(atPath: keychain.path) else { return }
+            try FileManager.default.moveItem(at: keychain, to: ClaudeCredentialStore.credentialURL(configDirectory: directory))
+        }
+    }
+    #expect(try ClaudeCredentialStore.readProfile(directory: fake.profile.path) == credential)
+}
+
 @Test("Codex renewal asks the app-server to refresh the token")
 func codexRenewalRequestsTokenRefresh() async throws {
     let fake = try FakeCLI()

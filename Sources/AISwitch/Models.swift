@@ -171,6 +171,8 @@ enum AISwitchError: LocalizedError, Sendable {
             "\(provider.displayName) login finished without creating credentials."
         case .notSignedIn(let provider):
             "\(provider.displayName) is not signed in on this Mac. Sign in with the CLI first, or use Add account."
+        case .credentialsMissing(.claude):
+            "This account's saved sign-in is missing. Choose Renew sign-in: Claude Code may still have it. If that doesn't work, remove the account and add it again."
         case .credentialsMissing(let provider):
             "No saved \(provider.displayName) credentials were found for this account. Remove it, then add or import it again."
         case .invalidResponse(let message):

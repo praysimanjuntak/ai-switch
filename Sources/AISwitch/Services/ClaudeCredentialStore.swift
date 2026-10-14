@@ -66,11 +66,16 @@ enum ClaudeCredentialStore {
 
     // MARK: Profile credentials
 
-    /// Moves the credential a `CLAUDE_CONFIG_DIR` login left in the Keychain into
-    /// that directory's `.credentials.json`, so the profile lives in one file.
+    /// Moves the credential a Claude Code run in `configDirectory` left in the
+    /// Keychain into that directory's `.credentials.json`, so the profile lives in
+    /// one file. A profile removed meanwhile is not recreated; its item is deleted.
     static func adoptLoginCredential(configDirectory: URL) async throws {
         let service = service(configDirectory: configDirectory.path)
         let file = credentialURL(configDirectory: configDirectory)
+        guard FileManager.default.fileExists(atPath: configDirectory.path) else {
+            await deleteKeychain(service: service)
+            throw AISwitchError.credentialsMissing(.claude)
+        }
         if let data = try await readKeychain(service: service) {
             try FileManager.default.writeOwnerOnly(data, to: file)
             await deleteKeychain(service: service)
