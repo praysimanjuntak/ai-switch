@@ -3,19 +3,23 @@ import Foundation
 
 /// Claude Code's credentials outside the profile files: the live one new
 /// sessions read, and the Keychain items earlier versions kept per profile.
-/// Injected so tests never touch the login Keychain.
+/// Injected so tests never touch the login Keychain or Claude Code's config.
 struct LiveClaudeCredential: Sendable {
     var read: @Sendable () async throws -> Data?
     var write: @Sendable (Data) async throws -> Void
     /// Deletes the Keychain item Claude Code keys by a profile's directory.
     var deleteProfileItem: @Sendable (String) async -> Void
+    /// The config whose account record Claude Code shows (`~/.claude.json`);
+    /// nil leaves it alone.
+    var config: URL? = nil
 
     static let system = LiveClaudeCredential(
         read: { try await ClaudeCredentialStore.readLive() },
         write: { try await ClaudeCredentialStore.writeLive($0) },
         deleteProfileItem: {
             await ClaudeCredentialStore.deleteKeychain(service: ClaudeCredentialStore.service(configDirectory: $0))
-        }
+        },
+        config: ClaudeAccountRecord.liveConfig
     )
 }
 
@@ -261,6 +265,20 @@ final class AccountStore: ObservableObject {
         }
         // Read after the outgoing credential was kept, in case it is this profile's.
         try await writeLiveCredential(savedCredential(of: profile), for: profile.provider)
+        do {
+            try await pointClaudeCode(at: profile)
+        } catch {
+            errorMessage = "Switched to \(profile.displayName), but Claude Code may still show the previous account's email: "
+                + error.localizedDescription
+        }
+    }
+
+    /// Claude Code shows the account its config names, which changing the
+    /// sign-in doesn't change; points it at `profile`'s account.
+    private func pointClaudeCode(at profile: AccountProfile) async throws {
+        guard profile.provider == .claude, let config = liveClaude.config else { return }
+        try await ClaudeAccountRecord.point(config, at: URL(fileURLWithPath: profile.profileDirectory),
+                                            identity: await knownIdentity(of: profile))
     }
 
     private func markActive(_ id: UUID) {
@@ -749,9 +767,13 @@ final class AccountStore: ObservableObject {
         case .none:
             return nil
         case .saved(let data):
+            // Also repairs a record left naming another account, e.g. by a switch
+            // before AI Switch replaced it; the next check tries again on failure.
+            try? await pointClaudeCode(at: profile)
             return data
         case .newer(let data, let identity):
             do { try writeCredential(data, into: profile, identity: identity) } catch { return nil }
+            try? await pointClaudeCode(at: profile)
             return data
         case .unverified(let data):
             guard renewing else { return nil }

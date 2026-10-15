@@ -40,15 +40,7 @@ enum CredentialIdentity {
     /// The account Claude Code recorded in `<directory>/.claude.json` when it
     /// signed in with that directory as `CLAUDE_CONFIG_DIR`.
     static func claudeConfig(directory: URL) -> AccountIdentity? {
-        guard let data = try? Data(contentsOf: directory.appendingPathComponent(".claude.json")),
-              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let account = root["oauthAccount"] as? [String: Any],
-              let user = account["accountUuid"] as? String else { return nil }
-        return AccountIdentity(
-            user: user,
-            organization: account["organizationUuid"] as? String,
-            email: account["emailAddress"] as? String
-        )
+        ClaudeAccountRecord.identity(inConfigAt: directory.appendingPathComponent(".claude.json"))
     }
 
     /// A JWT's payload, unverified: only used to tell accounts apart and to know
