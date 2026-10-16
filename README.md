@@ -53,6 +53,23 @@ shasum -a 256 -c AI-Switch-0.9.0-macOS-universal-beta.dmg.sha256
 - Filter by provider, search names and email addresses, and rename accounts from their actions menu.
 - Use Command-F to search, Command-N to add an account, and Command-R to refresh usage.
 
+### Use it from a terminal or an agent
+
+AI Switch comes with a command, `aiswitch`, that lists your saved accounts and switches between them, so scripts and coding agents can pick an account without the window (0.10.0 and later):
+
+```sh
+aiswitch list                     # accounts, which ones are in use, and what's left of each limit
+aiswitch list --json              # the same as JSON, for scripts and agents
+aiswitch use AI-5X                # new Claude Code sessions sign in as AI-5X
+aiswitch use me@example.com --provider codex
+```
+
+An account is named by its name, email, or id; the start of the id is enough. When a name or email matches more than one account, nothing switches and the answer lists them with their ids. `use` works like **Switch** in the app: sessions already running keep their account. Sign-ins are never printed.
+
+With `--json`, `list` answers `{"ok": true, "accounts": [...]}`. Each account has `id`, `provider` (`claude` or `codex`), `name`, `email`, `plan`, `active`, `needsAttention`, `usageCheckedAt`, and `limits`, a list of `name` (`5-hour`, `Weekly`, or a per-model limit such as `Fable weekly`), `leftPercent`, and `resetsAt`. `use` answers with the account it switched to. A failure answers `{"ok": false, "error": "..."}` and exits with status 1; a mistyped command exits with 2.
+
+The command installs itself. Homebrew links it into its `bin` folder. A copy installed from the DMG links it into `~/.local/bin`, the folder Claude Code's own installer uses, when the app starts, unless another program already uses the name there. `aiswitch` is the app's own executable, and the running app does the switching over an owner-only socket in its support folder, so the window and the command never change accounts at the same time. If the app isn't running, `list` reads the saved account list and `use` starts the app in the background.
+
 ### Switch omp too
 
 If [omp](https://omp.sh) is installed, a **Switch omp too** toggle appears next to the search field (0.6.0 and later). While it's on, the account you switch to for a CLI also becomes the one omp prefers for new omp sessions. The card shows an **omp** tag on the account omp prefers.

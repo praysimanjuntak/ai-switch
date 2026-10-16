@@ -256,9 +256,7 @@ struct UsageRing: View {
     /// The limits an account shows, at most three: 5-hour, weekly, then a
     /// per-model weekly limit such as Claude's Fable bucket.
     static func limits(of usage: UsageSnapshot?) -> [Limit] {
-        let fixed = [Limit(title: "5-hour", window: usage?.session), Limit(title: "Weekly", window: usage?.weekly)]
-        let scoped = (usage?.scoped ?? []).map { Limit(title: "\($0.name) weekly", window: $0.window) }
-        return Array((fixed + scoped).prefix(3))
+        UsageSnapshot.namedWindows(of: usage).prefix(3).map { Limit(title: $0.name, window: $0.window) }
     }
 
     let title: String

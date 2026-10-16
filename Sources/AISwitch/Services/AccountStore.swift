@@ -67,6 +67,8 @@ final class AccountStore: ObservableObject {
     /// Accounts being signed in again: checks and renewals leave them alone, so
     /// they can't write the old sign-in back over the new one.
     private var signingInProfileIDs: Set<UUID> = []
+    /// Answers `aiswitch` while the app runs.
+    private var agentServer: AgentCommandServer?
     private let isClaudeCodeRunning: @Sendable () async -> Bool
     /// Optional self-hosted sync server that lets a phone read usage. Every
     /// persisted change is pushed, coalesced by the sync's debounce.
@@ -103,8 +105,7 @@ final class AccountStore: ObservableObject {
         omp: OmpBridge = .system,
         sync: RemoteSync? = nil
     ) {
-        let support = supportDirectory ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("AI Switch", isDirectory: true)
+        let support = supportDirectory ?? Self.defaultSupportDirectory
         inspectProfile = inspect
         loginProfile = login
         renewProfile = renew
@@ -116,7 +117,7 @@ final class AccountStore: ObservableObject {
         self.omp = omp
         ompStateURL = support.appendingPathComponent("omp.json")
         self.sync = sync ?? RemoteSync(directory: support)
-        stateURL = support.appendingPathComponent("profiles.json")
+        stateURL = support.appendingPathComponent(Self.stateFileName)
         profilesRoot = support.appendingPathComponent("Profiles", isDirectory: true)
         backupsRoot = support.appendingPathComponent("Backups", isDirectory: true)
         load()
@@ -124,10 +125,25 @@ final class AccountStore: ObservableObject {
         guard startsAutomatically else { return }
         scheduleRefresh()
         scheduleCodexFeed()
+        do {
+            agentServer = try AgentCommandServer(path: support.appendingPathComponent(AgentSocket.fileName).path) { [weak self] request in
+                await self?.respond(to: request) ?? .failure("AI Switch is quitting.")
+            }
+        } catch {
+            errorMessage = "The aiswitch command can't reach AI Switch: \(error.localizedDescription)"
+        }
         Task { [weak self] in
             await self?.discoverExistingAccounts()
         }
     }
+
+    /// Where AI Switch keeps its accounts, read by the `aiswitch` command too.
+    nonisolated static var defaultSupportDirectory: URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("AI Switch", isDirectory: true)
+    }
+
+    nonisolated static let stateFileName = "profiles.json"
 
     deinit {
         refreshTask?.cancel()
@@ -242,12 +258,18 @@ final class AccountStore: ObservableObject {
         }
     }
 
-    func activate(_ id: UUID) async throws {
+    /// Makes the account the one new CLI sessions use, then checks its usage;
+    /// `waitsForUsage: false` returns once switched and checks in the background.
+    func activate(_ id: UUID, waitsForUsage: Bool = true) async throws {
         try Task.checkCancellation()
         guard let profile = profiles.first(where: { $0.id == id }) else { return }
         try await switchCredentials(to: profile)
         markActive(id)
-        await refresh(id)
+        if waitsForUsage {
+            await refresh(id)
+        } else {
+            Task { [weak self] in await self?.refresh(id) }
+        }
     }
 
     /// Makes `profile` the account new CLI sessions use. The credential that was
@@ -1015,7 +1037,7 @@ private extension JSONEncoder {
     }
 }
 
-private extension JSONDecoder {
+extension JSONDecoder {
     static var storedState: JSONDecoder {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601

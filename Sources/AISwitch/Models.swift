@@ -36,6 +36,14 @@ struct ScopedUsageWindow: Codable, Equatable, Sendable {
     var window: UsageWindow
 }
 
+extension UsageSnapshot {
+    /// Each limit under the name the app shows it by: 5-hour and weekly,
+    /// reported or not, then per-model weekly limits such as "Fable weekly".
+    static func namedWindows(of usage: UsageSnapshot?) -> [(name: String, window: UsageWindow?)] {
+        [("5-hour", usage?.session), ("Weekly", usage?.weekly)] + (usage?.scoped ?? []).map { ("\($0.name) weekly", $0.window) }
+    }
+}
+
 /// Credits that reset an account's usage limits on request, like Codex's
 /// "usage limit resets".
 struct LimitResets: Codable, Equatable, Sendable {
