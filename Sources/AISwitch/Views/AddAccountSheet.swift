@@ -1,14 +1,24 @@
 import AppKit
 import SwiftUI
 
+/// Adds an account, or signs an existing one in again.
 struct AddAccountSheet: View {
+    /// The account to sign in again; nil adds a new one.
+    private let account: AccountProfile?
     @EnvironmentObject private var store: AccountStore
     @Environment(\.dismiss) private var dismiss
-    @State private var provider: AIProvider = .codex
+    @State private var provider: AIProvider
+    /// The Claude organization of `account`, to choose if Claude asks.
+    @State private var organization: String?
     @State private var isWorking = false
     @State private var localError: String?
     @State private var loginTask: Task<Void, Never>?
     @State private var loginID: UUID?
+
+    init(account: AccountProfile? = nil) {
+        self.account = account
+        _provider = State(initialValue: account?.provider ?? .codex)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 23) {
@@ -19,31 +29,35 @@ struct AddAccountSheet: View {
                     .keyboardShortcut(.cancelAction)
             }
             VStack(alignment: .leading, spacing: 8) {
-                Text("Make room for another.")
+                Text(account == nil ? "Make room for another." : "Sign in again.")
                     .font(.system(size: 25, weight: .semibold))
                     .tracking(-0.7)
                     .foregroundStyle(AppPalette.ink)
-                Text("Connect an account and switch to it whenever you need.")
+                Text(account.map { "Sign \($0.displayName) in again in your browser. It keeps its name, settings, and usage history." }
+                     ?? "Connect an account and switch to it whenever you need.")
                     .font(.system(size: 12))
                     .foregroundStyle(AppPalette.secondaryInk)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            VStack(alignment: .leading, spacing: 9) {
-                SectionCaption(title: "Choose your provider").padding(.bottom, 2)
-                ForEach(AIProvider.allCases) { item in
-                    ProviderChoice(provider: item, selected: provider == item, available: store.cliAvailable(for: item)) {
-                        provider = item
-                        localError = nil
+            if account == nil {
+                VStack(alignment: .leading, spacing: 9) {
+                    SectionCaption(title: "Choose your provider").padding(.bottom, 2)
+                    ForEach(AIProvider.allCases) { item in
+                        ProviderChoice(provider: item, selected: provider == item, available: store.cliAvailable(for: item)) {
+                            provider = item
+                            localError = nil
+                        }
+                        .disabled(isWorking)
                     }
-                    .disabled(isWorking)
                 }
             }
 
             VStack(alignment: .leading, spacing: 12) {
-                signInDetail("safari", title: "Sign in with your browser", detail: "Use your existing \(provider.shortName) account.")
-                signInDetail("lock.shield", title: "Saved on this Mac only",
-                             detail: "Kept in an owner-only file inside this app's profile folder. Nothing is sent anywhere else.")
+                signInDetail("safari", title: "Sign in with your browser", detail: browserDetail)
+                signInDetail("lock.shield", title: "Saved on this Mac only", detail: account == nil
+                             ? "Kept in an owner-only file inside this app's profile folder. Nothing is sent anywhere else."
+                             : "Replaces this account's saved sign-in only if you sign in as it. Nothing is sent anywhere else.")
             }
             .padding(.vertical, 2)
 
@@ -80,7 +94,7 @@ struct AddAccountSheet: View {
                         .buttonStyle(AppButtonStyle())
                 }
                 Text(isWorking ? "Finish in your browser, or cancel here at any time."
-                     : "Your other accounts stay connected.")
+                     : account == nil ? "Your other accounts stay connected." : "Nothing changes unless you sign in as this account.")
                     .font(.system(size: 10))
                     .foregroundStyle(AppPalette.tertiaryInk)
                     .multilineTextAlignment(.center)
@@ -92,9 +106,21 @@ struct AddAccountSheet: View {
         .fixedSize(horizontal: false, vertical: true)
         .background(AppPalette.canvas)
         .onDisappear(perform: cancelLogin)
+        .task {
+            guard let account, account.provider == .claude else { return }
+            organization = ClaudeAccountRecord.organizationName(
+                inConfigAt: URL(fileURLWithPath: account.profileDirectory).appendingPathComponent(".claude.json"))
+        }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
             cancelLogin()
         }
+    }
+
+    private var browserDetail: String {
+        guard let account else { return "Use your existing \(provider.shortName) account." }
+        let who = "Use \(account.email ?? account.displayName)."
+        guard let organization else { return who }
+        return "\(who) If Claude asks for an organization, choose “\(organization)”."
     }
 
     private func signInDetail(_ symbol: String, title: String, detail: String) -> some View {
@@ -127,7 +153,11 @@ struct AddAccountSheet: View {
                 }
             }
             do {
-                try await store.addAccount(provider: selectedProvider)
+                if let account {
+                    try await store.signInAgain(account.id)
+                } else {
+                    try await store.addAccount(provider: selectedProvider)
+                }
                 guard !Task.isCancelled, loginID == attempt else { return }
                 dismiss()
             } catch is CancellationError {

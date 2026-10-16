@@ -64,6 +64,9 @@ final class AccountStore: ObservableObject {
     private var usageBackoff: [UUID: (retryAt: Date, delay: TimeInterval)] = [:]
     /// Accounts whose automatic renewal failed: the message shown, and when to try again.
     private var autoRenewFailures: [UUID: (retryAt: Date, message: String)] = [:]
+    /// Accounts being signed in again: checks and renewals leave them alone, so
+    /// they can't write the old sign-in back over the new one.
+    private var signingInProfileIDs: Set<UUID> = []
     private let isClaudeCodeRunning: @Sendable () async -> Bool
     /// Optional self-hosted sync server that lets a phone read usage. Every
     /// persisted change is pushed, coalesced by the sync's debounce.
@@ -413,6 +416,120 @@ final class AccountStore: ObservableObject {
         await check(id, renewal: .manual)
     }
 
+    /// Signs the account in again through its CLI's browser sign-in, for a
+    /// sign-in that no longer renews: a Claude sign-in past its 30 days, or a
+    /// Codex sign-in that was revoked. The sign-in happens in a folder of its
+    /// own and replaces the saved one only if it is the same account, so the
+    /// account keeps its name, settings and history, and a failed, cancelled
+    /// or mistaken sign-in changes nothing.
+    func signInAgain(_ id: UUID) async throws {
+        try Task.checkCancellation()
+        guard let profile = profiles.first(where: { $0.id == id }) else { return }
+        guard !refreshingProfileIDs.contains(id), switchingProfileID != id, signingInProfileIDs.insert(id).inserted else {
+            throw AISwitchError.commandFailed("\(profile.displayName) is being updated. Try again in a moment.")
+        }
+        defer { signingInProfileIDs.remove(id) }
+        let staging = profileURL(for: UUID(), provider: profile.provider)
+        try secureCreateDirectory(staging)
+        do {
+            try await loginProfile(profile.provider, staging)
+            // A late browser callback must not change an account after the sheet closed.
+            try Task.checkCancellation()
+            try await adoptSignIn(from: staging, into: id)
+        } catch {
+            await discardSignIn(staging, provider: profile.provider)
+            throw error
+        }
+        await discardSignIn(staging, provider: profile.provider)
+        Task { [weak self] in await self?.refresh(id) }
+    }
+
+    /// Replaces the account's saved sign-in with the one made in `staging`, once
+    /// it is known to sign in to the same account. When the account is active,
+    /// the CLI gets the new sign-in too, unless it signed in to another account.
+    private func adoptSignIn(from staging: URL, into id: UUID) async throws {
+        guard let profile = profiles.first(where: { $0.id == id }) else { throw CancellationError() }
+        let provider = profile.provider
+        guard let credential = try? Data(contentsOf: credentialURL(in: staging, provider: provider)) else {
+            throw AISwitchError.loginDidNotCreateCredentials(provider)
+        }
+        // A fresh Claude Code folder names the account it signed in; Codex tokens name theirs.
+        var identity = provider == .claude ? CredentialIdentity.claudeConfig(directory: staging) : nil
+        if identity == nil { identity = await identify(provider, credential) }
+        guard let signedIn = identity else {
+            throw AISwitchError.invalidResponse(
+                "AI Switch couldn't tell which account you signed in to, so \(profile.displayName) was left as it was. Try again.")
+        }
+        try await requireSameAccount(signedIn, as: profile, staging: staging)
+        var updatesCLI = isActive(profile)
+        if updatesCLI, case .foreign = await liveCredential(for: profile) { updatesCLI = false }
+        try Task.checkCancellation()
+
+        // From here on every step runs, so the account is never left half signed in.
+        try writeCredential(credential, into: profile, identity: signedIn)
+        if provider == .claude {
+            // An item an interrupted Claude Code run left for the folder would
+            // win over the new file when Claude Code next runs there.
+            await liveClaude.deleteProfileItem(profile.profileDirectory)
+            let config = URL(fileURLWithPath: profile.profileDirectory).appendingPathComponent(".claude.json")
+            if manager.fileExists(atPath: config.path) {
+                _ = try? await ClaudeAccountRecord.point(config, at: staging, identity: signedIn)
+            } else if let record = try? Data(contentsOf: staging.appendingPathComponent(".claude.json")) {
+                try? manager.writeOwnerOnly(record, to: config)
+            }
+        }
+        autoRenewFailures[id] = nil
+        if let index = profiles.firstIndex(where: { $0.id == id }) { profiles[index].authIssue = nil }
+        save()
+        guard updatesCLI, isActive(profile) else { return }
+        do {
+            if provider == .codex {
+                try CodexConfigEditor.ensureFileCredentialStore()
+                try backupCurrentCodexCredential()
+            }
+            try await writeLiveCredential(credential, for: provider)
+            try? await pointClaudeCode(at: profile)
+        } catch {
+            errorMessage = "\(profile.displayName) is signed in again, but \(provider.displayName) still uses its old sign-in "
+                + "(\(error.localizedDescription)). Switch to the account again to update it."
+        }
+    }
+
+    /// Throws, naming who was signed in, unless `signedIn` is `profile`'s account.
+    private func requireSameAccount(_ signedIn: AccountIdentity, as profile: AccountProfile, staging: URL) async throws {
+        let own = await knownIdentity(of: profile)
+        let sameUser: Bool
+        if let own {
+            if own.isSameAccount(as: signedIn) { return }
+            sameUser = own.user == signedIn.user
+        } else if let email = profile.email, let other = signedIn.email {
+            // Nothing recorded to compare: the email shown on the card has to match.
+            if email.caseInsensitiveCompare(other) == .orderedSame { return }
+            sameUser = false
+        } else {
+            return // Nothing to compare at all; this is the account the user chose to sign in.
+        }
+        let signedInAs = signedIn.email ?? "another account"
+        guard sameUser else {
+            let expected = own?.email ?? profile.email ?? "another account"
+            throw AISwitchError.commandFailed("You signed in as \(signedInAs), but \(profile.displayName) is \(expected). "
+                + "Nothing was changed. Sign in again as \(expected), or use Add account to add \(signedInAs).")
+        }
+        let kind = profile.provider == .claude ? "organization" : "workspace"
+        let chosen = ClaudeAccountRecord.organizationName(inConfigAt: staging.appendingPathComponent(".claude.json"))
+        let expected = ClaudeAccountRecord.organizationName(
+            inConfigAt: URL(fileURLWithPath: profile.profileDirectory).appendingPathComponent(".claude.json"))
+        throw AISwitchError.commandFailed("You signed in as \(signedInAs) in \(chosen.map { "“\($0)”" } ?? "another \(kind)"), "
+            + "but \(profile.displayName) uses \(expected.map { "“\($0)”" } ?? "a different \(kind)"). Nothing was changed. "
+            + "Sign in again and choose \(expected.map { "“\($0)”" } ?? "its \(kind)"), or use Add account to add this one.")
+    }
+
+    /// Deletes a sign-in folder and any Keychain item Claude Code left for it.
+    private func discardSignIn(_ directory: URL, provider: AIProvider) async {
+        discard(directory: directory)
+        if provider == .claude { await liveClaude.deleteProfileItem(directory.path) }
+    }
+
     /// A Claude sign-in expires about eight hours after Claude Code last used it.
     /// An expired one is renewed the way Renew sign-in does it, with one
     /// tool-less Claude Code message. A failed attempt is reported and not
@@ -479,7 +596,7 @@ final class AccountStore: ObservableObject {
     @discardableResult
     private func check(_ id: UUID, renewal: Renewal?) async -> CheckOutcome {
         guard let profile = profiles.first(where: { $0.id == id }) else { return .other }
-        guard !Task.isCancelled, !refreshingProfileIDs.contains(id) else { return .other }
+        guard !Task.isCancelled, !refreshingProfileIDs.contains(id), !signingInProfileIDs.contains(id) else { return .other }
         refreshingProfileIDs.insert(id)
         defer { refreshingProfileIDs.remove(id) }
         let renewing = renewal != nil
@@ -536,7 +653,7 @@ final class AccountStore: ObservableObject {
             if case AISwitchError.claudeSessionExpired = error { expired = true }
             if expired, !renewing { return .signInExpired }
             if renewal == .automatic, !renewed || expired {
-                let reason = renewed ? "Claude still reports it as expired. Sign in again with Add account." : error.localizedDescription
+                let reason = renewed ? "Claude still reports it as expired. Choose Sign in again." : error.localizedDescription
                 setIssue("Unable to renew sign-in: \(reason)", on: id)
                 return .renewalFailed
             }
@@ -862,8 +979,12 @@ final class AccountStore: ObservableObject {
     }
 
     private func credentialURL(of profile: AccountProfile) -> URL {
-        let directory = URL(fileURLWithPath: profile.profileDirectory)
-        switch profile.provider {
+        credentialURL(in: URL(fileURLWithPath: profile.profileDirectory), provider: profile.provider)
+    }
+
+    /// Where the CLI saves its sign-in in a profile folder.
+    private func credentialURL(in directory: URL, provider: AIProvider) -> URL {
+        switch provider {
         case .codex: return directory.appendingPathComponent("auth.json")
         case .claude: return ClaudeCredentialStore.credentialURL(configDirectory: directory)
         }

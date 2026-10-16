@@ -18,6 +18,11 @@ enum ClaudeAccountRecord {
         record(in: try? Data(contentsOf: config)).flatMap(identity(of:))
     }
 
+    /// The organization the config file at `config` names, if any.
+    static func organizationName(inConfigAt config: URL) -> String? {
+        record(in: try? Data(contentsOf: config))?["organizationName"] as? String
+    }
+
     /// Makes the record in `config` name the account `identity`. The record
     /// Claude Code saved in `profileDirectory` when that account signed in there
     /// is copied whole. Without one, the bare account is written, and Claude Code

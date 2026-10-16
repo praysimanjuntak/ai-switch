@@ -10,6 +10,8 @@ struct RootView: View {
     @State private var search = ""
     @State private var showsAddAccount = false
     @State private var showsPhoneSync = false
+    /// The account whose sign-in sheet is open.
+    @State private var signingInAgain: AccountProfile?
     @FocusState private var searchFocused: Bool
 
     private var matchingProfiles: [AccountProfile] {
@@ -51,6 +53,9 @@ struct RootView: View {
         }
         .sheet(isPresented: $showsAddAccount) {
             AddAccountSheet().environmentObject(store).preferredColorScheme(.light)
+        }
+        .sheet(item: $signingInAgain) { account in
+            AddAccountSheet(account: account).environmentObject(store).preferredColorScheme(.light)
         }
         .sheet(isPresented: $showsPhoneSync) {
             PhoneSyncSheet(sync: store.sync).environmentObject(store).preferredColorScheme(.light)
@@ -236,6 +241,7 @@ struct RootView: View {
             },
             refresh: { Task { await store.refresh(profile.id) } },
             renew: { Task { await store.renew(profile.id) } },
+            signInAgain: { signingInAgain = profile },
             rename: { store.rename(profile.id, to: $0) },
             remove: { Task { await store.remove(profile.id) } },
             useReset: { try await store.useReset(profile.id) },

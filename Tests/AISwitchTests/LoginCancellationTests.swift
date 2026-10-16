@@ -2,7 +2,8 @@ import Foundation
 import Testing
 @testable import AISwitch
 
-private actor LoginGate {
+/// Holds a CLI sign-in open until the test lets it finish.
+actor LoginGate {
     private var continuation: CheckedContinuation<Void, Never>?
     private var started: CheckedContinuation<Void, Never>?
     private(set) var directory: URL?

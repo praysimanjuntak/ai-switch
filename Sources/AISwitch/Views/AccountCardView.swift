@@ -18,6 +18,8 @@ struct AccountCardView: View {
     let activate: () -> Void
     let refresh: () -> Void
     let renew: () -> Void
+    /// Opens the browser sign-in that replaces this account's saved sign-in.
+    let signInAgain: () -> Void
     let rename: (String) -> Void
     let remove: () -> Void
     let useReset: () async throws -> LimitResetOutcome
@@ -177,6 +179,8 @@ struct AccountCardView: View {
                 .disabled(isRefreshing || isSwitching)
             Button("Renew sign-in", systemImage: "key.horizontal", action: renew)
                 .disabled(isRefreshing || isSwitching)
+            Button("Sign in again…", systemImage: "person.crop.circle.badge.checkmark", action: signInAgain)
+                .disabled(isRefreshing || isSwitching)
             Button("Rename…", systemImage: "pencil") {
                 editedName = profile.displayName
                 showsRename = true
@@ -211,12 +215,20 @@ struct AccountCardView: View {
                     .font(.system(size: 11))
                     .foregroundStyle(AppPalette.tertiaryInk)
             }
-            Button("Renew sign-in") {
-                showsIssue = false
-                renew()
+            HStack(spacing: 8) {
+                Button("Renew sign-in") {
+                    showsIssue = false
+                    renew()
+                }
+                .buttonStyle(AppButtonStyle(compact: true))
+                .help("Ask \(profile.provider.displayName) to renew this account's sign-in")
+                Button("Sign in again…") {
+                    showsIssue = false
+                    signInAgain()
+                }
+                .buttonStyle(AppButtonStyle(compact: true))
+                .help("Sign this account in again in your browser, replacing its saved sign-in")
             }
-            .buttonStyle(AppButtonStyle(compact: true))
-            .help("Ask \(profile.provider.displayName) to renew this account's sign-in")
         }
         .padding(16)
         .frame(width: 280)
