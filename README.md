@@ -58,13 +58,14 @@ shasum -a 256 -c AI-Switch-0.10.0-macOS-universal-beta.dmg.sha256
 AI Switch comes with a command, `aiswitch`, that lists your saved accounts and switches between them, so scripts and coding agents can pick an account without the window (0.10.0 and later):
 
 ```sh
-aiswitch list                     # accounts, which ones are in use, and what's left of each limit
+aiswitch list                     # accounts with their IDs, which ones are in use, and what's left of each limit
 aiswitch list --json              # the same as JSON, for scripts and agents
-aiswitch use AI-5X                # new Claude Code sessions sign in as AI-5X
+aiswitch use 3f2a9c1e             # switch to the account with that ID
+aiswitch use AI-5X                # or by name: new Claude Code sessions sign in as AI-5X
 aiswitch use me@example.com --provider codex
 ```
 
-An account is named by its name, email, or id; the start of the id is enough. When a name or email matches more than one account, nothing switches and the answer lists them with their ids. `use` works like **Switch** in the app: sessions already running keep their account. Sign-ins are never printed.
+An account is named by the ID `aiswitch list` shows (the first 8 characters of its id; longer parts of the id, up to the whole id from `--json`, work too), its name, or its email. An email isn't always unique: one email can sign in to several Claude organizations, each saved as its own account. When a name or email matches more than one account, nothing switches and the answer lists them with their IDs. `use` works like **Switch** in the app: sessions already running keep their account. Sign-ins are never printed.
 
 With `--json`, `list` answers `{"ok": true, "accounts": [...]}`. Each account has `id`, `provider` (`claude` or `codex`), `name`, `email`, `plan`, `active`, `needsAttention`, `usageCheckedAt`, and `limits`, a list of `name` (`5-hour`, `Weekly`, or a per-model limit such as `Fable weekly`), `leftPercent`, and `resetsAt`. `use` answers with the account it switched to. A failure answers `{"ok": false, "error": "..."}` and exits with status 1; a mistyped command exits with 2.
 

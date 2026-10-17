@@ -65,7 +65,8 @@ struct AgentCLI {
       aiswitch list [--provider claude|codex] [--json]
       aiswitch use <account> [--provider claude|codex] [--json]
 
-    <account> is an account's name, email, or id; the start of its id is enough.
+    <account> is the ID shown by aiswitch list, or the account's name or email.
+    Longer parts of the id, up to the whole id from --json, work too.
     use switches the account new Claude Code or Codex sessions sign in with, like
     Switch in the app. Sessions already running keep their account.
 
@@ -200,14 +201,14 @@ struct AgentCLI {
 
     static func table(_ accounts: [AccountSummary]) -> String {
         guard !accounts.isEmpty else { return "No accounts yet. Add one in AI Switch." }
-        let header = ["", "ACCOUNT", "PROVIDER", "EMAIL", "PLAN", "5-HOUR", "WEEKLY", "OTHER LIMITS"]
+        let header = ["", "ID", "ACCOUNT", "PROVIDER", "EMAIL", "PLAN", "5-HOUR", "WEEKLY", "OTHER LIMITS"]
         let rows = accounts.map { account -> [String] in
             func left(_ name: String) -> String {
                 account.limits.first { $0.name == name }.map { "\($0.leftPercent)%" } ?? "—"
             }
             let others = account.limits.filter { $0.name != "5-hour" && $0.name != "Weekly" }
                 .map { "\($0.name) \($0.leftPercent)%" }
-            return [account.active ? "*" : "", account.name, account.provider.displayName, account.email ?? "—",
+            return [account.active ? "*" : "", account.id.shortID, account.name, account.provider.listLabel, account.email ?? "—",
                     account.plan ?? "—", left("5-hour"), left("Weekly"), others.joined(separator: ", ")]
         }
         let widths = header.indices.map { column in ([header] + rows).map { $0[column].count }.max() ?? 0 }
@@ -217,6 +218,7 @@ struct AgentCLI {
                 .replacingOccurrences(of: "\\s+$", with: "", options: .regularExpression)
         }
         var text = lines.joined(separator: "\n") + "\n\n* New sessions sign in with this account. Percentages are what's left."
+            + "\nSwitch with: aiswitch use <ID or ACCOUNT>"
         for account in accounts {
             if let issue = account.needsAttention { text += "\n! \(account.name): \(issue)" }
         }

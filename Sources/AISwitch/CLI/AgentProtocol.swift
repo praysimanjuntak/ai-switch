@@ -113,9 +113,20 @@ enum AccountQuery {
     }
 
     private static func describe(_ profile: AccountProfile) -> String {
-        "\(profile.displayName) (\(profile.provider.displayName)\(profile.email.map { ", \($0)" } ?? ""), "
-            + "id \(profile.id.uuidString.prefix(8).lowercased()))"
+        "\(profile.displayName) (\(profile.provider.listLabel)\(profile.email.map { ", \($0)" } ?? ""), "
+            + "id \(profile.id.shortID))"
     }
+}
+
+extension UUID {
+    /// The first 8 characters of the id, as `aiswitch` shows it; `aiswitch use`
+    /// takes it, like any start of the id of 4 or more characters.
+    var shortID: String { uuidString.prefix(8).lowercased() }
+}
+
+extension AIProvider {
+    /// How `aiswitch` names the provider in its account lists: "CC" for Claude Code.
+    var listLabel: String { self == .claude ? "CC" : displayName }
 }
 
 extension AccountStore {
