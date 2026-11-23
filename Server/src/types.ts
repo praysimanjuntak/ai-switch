@@ -1,13 +1,13 @@
 /** Contract shared with the Mac app (RemoteSync.swift) and the PWA (public/app.js). */
 
-export type Provider = "codex" | "claude";
+export type Provider = "codex" | "claude" | "antigravity";
 
 export interface UsageWindow {
   usedPercent: number;
   resetsAt: string | null; // ISO 8601
 }
 
-/** A weekly limit scoped to one model or surface, e.g. Claude's "Fable" bucket. */
+/** A weekly limit scoped to one model or surface, e.g. Claude's "Fable" or Antigravity's "Claude/GPT" bucket. */
 export interface ScopedUsageWindow {
   name: string;
   window: UsageWindow;
@@ -25,7 +25,7 @@ export interface UsageSnapshot {
 /** Access token only. Refresh tokens never leave the Mac. */
 export interface PushedToken {
   accessToken: string;
-  accountId: string | null; // Codex: ChatGPT-Account-Id header
+  accountId: string | null; // Codex: ChatGPT-Account-Id header; Antigravity: cloudaicompanionProject
   expiresAt: string | null; // ISO 8601; null when unknown
 }
 

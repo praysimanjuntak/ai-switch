@@ -120,7 +120,8 @@ function validatePush(body: unknown): string | null {
   if (!Array.isArray(push.accounts)) return "accounts must be an array";
   for (const account of push.accounts as Partial<PushedAccount>[]) {
     if (typeof account?.id !== "string" || account.id.length === 0) return "account id missing";
-    if (account.provider !== "codex" && account.provider !== "claude") return `unknown provider for ${account.id}`;
+    if (account.provider !== "codex" && account.provider !== "claude" && account.provider !== "antigravity")
+      return `unknown provider for ${account.id}`;
     if (typeof account.displayName !== "string") return `displayName missing for ${account.id}`;
     if (typeof account.isActive !== "boolean") return `isActive missing for ${account.id}`;
     // Optional fields may be omitted entirely (Swift's encoder drops nil keys).

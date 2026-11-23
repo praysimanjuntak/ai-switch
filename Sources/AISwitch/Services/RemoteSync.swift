@@ -211,6 +211,11 @@ final class RemoteSync: ObservableObject {
                   let access = oauth["accessToken"] as? String else { return nil }
             let expiry = (oauth["expiresAt"] as? NSNumber).map { Date(timeIntervalSince1970: $0.doubleValue / 1000) }
             return PushedAccount.Token(accessToken: access, accountId: nil, expiresAt: expiry)
+        case .antigravity:
+            guard let data = try? Data(contentsOf: AntigravityCredentialStore.credentialURL(profileDirectory: directory)),
+                  let token = AntigravityCredentialStore.parse(data) else { return nil }
+            let projectID = AntigravityCredentialStore.readProjectID(profileDirectory: directory)
+            return PushedAccount.Token(accessToken: token.accessToken, accountId: projectID, expiresAt: token.expiresAt)
         }
     }
 

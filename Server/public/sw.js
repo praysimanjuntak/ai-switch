@@ -1,7 +1,7 @@
 // Caches the app shell so the last usage still renders without a connection.
 // API requests always go to the network; app.js keeps its own last-view cache.
-const CACHE = "aiswitch-shell-v3";
-const SHELL = ["/", "/app.css", "/app.js", "/manifest.webmanifest", "/openai.svg", "/anthropic.png", "/icons/icon-192.png"];
+const CACHE = "aiswitch-shell-v5";
+const SHELL = ["/", "/app.css", "/app.js", "/manifest.webmanifest", "/openai.svg", "/anthropic.png", "/antigravity.svg", "/icons/icon-192.png"];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(SHELL)).then(() => self.skipWaiting()));

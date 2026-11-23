@@ -30,7 +30,15 @@ enum SecurityTool {
     /// secret is never passed as a process argument, where `ps` could read it.
     static func write(_ data: Data, service: String, account: String) async throws -> Bool {
         let hex = data.map { String(format: "%02x", $0) }.joined()
-        let line = "add-generic-password -U -a \"\(account)\" -s \"\(service)\" -X \"\(hex)\"\n"
+        var line = "add-generic-password -U -a \"\(account)\" -s \"\(service)\" -X \"\(hex)\"\n"
+        if line.utf8.count > interactiveLineLimit,
+           let ascii = String(data: data, encoding: .utf8),
+           ascii.utf8.allSatisfy({ ($0 >= 0x30 && $0 <= 0x39) || ($0 >= 0x41 && $0 <= 0x5A)
+               || ($0 >= 0x61 && $0 <= 0x7A) || $0 == 0x2B || $0 == 0x2D || $0 == 0x2F
+               || $0 == 0x3A || $0 == 0x3D || $0 == 0x5F }) {
+            // Pure base64 / keyring-prefixed ASCII takes half the line length with `-w`.
+            line = "add-generic-password -U -a \"\(account)\" -s \"\(service)\" -w \"\(ascii)\"\n"
+        }
         guard line.utf8.count <= interactiveLineLimit else { return false }
         let result = try await CommandRunner.run(
             executable: executable, arguments: ["-i"], input: Data(line.utf8), timeout: 10

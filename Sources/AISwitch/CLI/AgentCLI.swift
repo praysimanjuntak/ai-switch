@@ -62,13 +62,14 @@ struct AgentCLI {
     aiswitch — list the accounts saved in AI Switch and switch between them.
 
     Usage:
-      aiswitch list [--provider claude|codex] [--json]
-      aiswitch use <account> [--provider claude|codex] [--json]
+      aiswitch list [--provider claude|codex|antigravity] [--json]
+      aiswitch use <account> [--provider claude|codex|antigravity] [--json]
 
     <account> is the ID shown by aiswitch list, or the account's name or email.
     Longer parts of the id, up to the whole id from --json, work too.
-    use switches the account new Claude Code or Codex sessions sign in with, like
-    Switch in the app. Sessions already running keep their account.
+    use switches the account new Claude Code, Codex, or Antigravity sessions
+    sign in with, like Switch in the app. Sessions already running keep their
+    account.
 
     --json prints the answer as JSON, for scripts and agents. Percentages are
     what's left of each limit. Sign-ins are never printed.
@@ -87,12 +88,12 @@ struct AgentCLI {
             case "--json":
                 json = true
             case "--provider", "-p":
-                guard let value = rest.popFirst() else { return .invalid("--provider needs claude or codex.") }
-                guard let parsed = Self.provider(value) else { return .invalid("Unknown provider “\(value)”: use claude or codex.") }
+                guard let value = rest.popFirst() else { return .invalid("--provider needs claude, codex, or antigravity.") }
+                guard let parsed = Self.provider(value) else { return .invalid("Unknown provider “\(value)”: use claude, codex, or antigravity.") }
                 provider = parsed
             case _ where word.hasPrefix("--provider="):
                 let value = String(word.dropFirst("--provider=".count))
-                guard let parsed = Self.provider(value) else { return .invalid("Unknown provider “\(value)”: use claude or codex.") }
+                guard let parsed = Self.provider(value) else { return .invalid("Unknown provider “\(value)”: use claude, codex, or antigravity.") }
                 provider = parsed
             case _ where word.hasPrefix("-") && word.count > 1:
                 return .invalid("Unknown option “\(word)”.")
@@ -117,6 +118,7 @@ struct AgentCLI {
         switch value.lowercased() {
         case "claude", "claude-code", "claudecode": .claude
         case "codex": .codex
+        case "antigravity", "antigravity-cli", "antigravitycli", "agy", "gemini": .antigravity
         default: nil
         }
     }

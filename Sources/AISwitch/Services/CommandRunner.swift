@@ -255,6 +255,7 @@ enum CommandRunner {
             "\(home)/.local/bin",
             "\(home)/.bun/bin",
             "\(home)/.npm-global/bin",
+            "\(home)/.volta/bin",
             "\(home)/.codex/packages/standalone/current/bin",
             "/opt/homebrew/bin",
             "/usr/local/bin",
@@ -274,11 +275,13 @@ enum CommandRunner {
         executable: URL,
         arguments: [String],
         environment additions: [String: String] = [:],
+        unsetEnvironment: Set<String> = [],
         input: Data? = nil,
         directory: URL? = nil,
         timeout: TimeInterval = 30
     ) async throws -> CommandResult {
         var environment = ProcessInfo.processInfo.environment
+        unsetEnvironment.forEach { environment.removeValue(forKey: $0) }
         additions.forEach { environment[$0.key] = $0.value }
         let command = RunningCommand(
             executable: executable, arguments: arguments, environment: environment,

@@ -1,13 +1,14 @@
 import Foundation
 import SQLite3
 
-/// An account signed in to omp, as omp identifies it: `email:<email>|org:<org>`.
-/// For Codex the org is the ChatGPT account (workspace) id; for Claude, the
-/// organization id.
+/// An account signed in to omp, as omp identifies it: `email:<email>|org:<org>`
+/// for Codex and Claude, or `email:<email>` / `email:<email>|project:<project>`
+/// for Antigravity.
 struct OmpAccount: Codable, Equatable, Hashable, Sendable {
     var provider: AIProvider
     var email: String
-    var orgId: String
+    var orgId: String?
+    var projectId: String?
 
     /// omp's provider ids for the accounts AI Switch manages.
     var ompProvider: String { Self.ompProvider(for: provider) }
@@ -16,6 +17,7 @@ struct OmpAccount: Codable, Equatable, Hashable, Sendable {
         switch provider {
         case .codex: "openai-codex"
         case .claude: "anthropic"
+        case .antigravity: "google-antigravity"
         }
     }
 
@@ -26,22 +28,49 @@ struct OmpAccount: Codable, Equatable, Hashable, Sendable {
             guard let colon = part.firstIndex(of: ":") else { continue }
             fields[String(part[..<colon])] = String(part[part.index(after: colon)...])
         }
-        guard let email = fields["email"], !email.isEmpty, let org = fields["org"], !org.isEmpty else { return nil }
-        self.init(provider: provider, email: email, orgId: org)
+        guard let email = fields["email"], !email.isEmpty else { return nil }
+        switch provider {
+        case .codex, .claude:
+            guard let org = fields["org"], !org.isEmpty else { return nil }
+            self.init(provider: provider, email: email, orgId: org)
+        case .antigravity:
+            let project = [fields["project"], fields["org"]].compactMap { $0 }.first { !$0.isEmpty }
+            self.init(provider: provider, email: email, projectId: project)
+        }
     }
 
     init(provider: AIProvider, email: String, orgId: String) {
         self.provider = provider
         self.email = email
         self.orgId = orgId
+        self.projectId = nil
+    }
+
+    init(provider: AIProvider, email: String, projectId: String?) {
+        self.provider = provider
+        self.email = email
+        self.orgId = nil
+        self.projectId = projectId
     }
 
     /// The omp account a saved profile signs in as: the same organization (Codex
-    /// workspace) and email. A profile that doesn't know its identity yet is
-    /// matched by email only when that is unambiguous.
+    /// workspace) and email, or email (and project when present) for Antigravity.
+    /// A profile that doesn't know its identity yet is matched by email only
+    /// when that is unambiguous.
     static func matching(_ profile: AccountProfile, in accounts: [OmpAccount]) -> OmpAccount? {
         let candidates = accounts.filter { $0.provider == profile.provider }
         let email = (profile.identity?.email ?? profile.email)?.lowercased()
+        if profile.provider == .antigravity {
+            let project = AntigravityCredentialStore.readProjectID(profileDirectory: URL(fileURLWithPath: profile.profileDirectory))
+            if let email {
+                let sameEmail = candidates.filter { $0.email.lowercased() == email }
+                if let project, let exact = sameEmail.first(where: { $0.projectId == project }) {
+                    return exact
+                }
+                return sameEmail.count == 1 ? sameEmail[0] : nil
+            }
+            return nil
+        }
         if let organization = profile.identity?.organization {
             let sameOrg = candidates.filter { $0.orgId == organization }
             return sameOrg.first { email == nil || $0.email.lowercased() == email } ?? (sameOrg.count == 1 ? sameOrg[0] : nil)
@@ -74,13 +103,16 @@ struct OmpAccountPolicy: Codable, Equatable, Sendable {
         let accountIdRulesOut = account.accountId.map { target.provider == .codex && $0 != target.orgId } ?? false
         return (account.email.map { $0.lowercased() == target.email.lowercased() } ?? true)
             && (account.orgId.map { $0 == target.orgId } ?? true)
+            && (account.projectId.map { $0 == target.projectId } ?? true)
             && !accountIdRulesOut
     }
 
     /// The rule AI Switch writes to make omp prefer `target`.
     static func preferring(_ target: OmpAccount, priority: Double) -> OmpAccountPolicy {
-        OmpAccountPolicy(provider: target.ompProvider, account: Selector(email: target.email, orgId: target.orgId),
-                         priority: priority)
+        let selector = target.provider == .antigravity
+            ? Selector(email: target.email, projectId: target.projectId)
+            : Selector(email: target.email, orgId: target.orgId)
+        return OmpAccountPolicy(provider: target.ompProvider, account: selector, priority: priority)
     }
 }
 
@@ -169,7 +201,7 @@ struct OmpBridge: Sendable {
         let sql = """
             SELECT provider, identity_key FROM auth_credentials
             WHERE disabled_cause IS NULL AND credential_type = 'oauth' AND identity_key IS NOT NULL
-              AND provider IN ('openai-codex', 'anthropic')
+              AND provider IN ('openai-codex', 'anthropic', 'google-antigravity')
             """
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(handle, sql, -1, &statement, nil) == SQLITE_OK else {
@@ -183,6 +215,7 @@ struct OmpBridge: Sendable {
             let provider: AIProvider? = switch String(cString: providerText) {
             case "openai-codex": .codex
             case "anthropic": .claude
+            case "google-antigravity": .antigravity
             default: nil
             }
             if let provider, let account = OmpAccount(provider: provider, identityKey: String(cString: keyText)) {

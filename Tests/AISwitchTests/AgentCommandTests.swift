@@ -32,7 +32,11 @@ func commandModeDetection() {
     #expect(AgentCLI(arguments: ["/opt/homebrew/bin/aiswitch", "list", "--json"])?.command == .list(provider: nil, json: true))
     #expect(AgentCLI(arguments: [app, "use", "Claude", "Code", "account", "--provider", "claude"])?.command
             == .use(account: "Claude Code account", provider: .claude, json: false))
-    for refused in [["aiswitch", "use"], ["aiswitch", "list", "--provider", "gemini"], ["aiswitch", "frobnicate"]] {
+    #expect(AgentCLI(arguments: ["aiswitch", "list", "--provider", "antigravity"])?.command == .list(provider: .antigravity, json: false))
+    #expect(AgentCLI(arguments: ["aiswitch", "use", "work", "--provider=agy", "--json"])?.command
+            == .use(account: "work", provider: .antigravity, json: true))
+    #expect(AgentCLI(arguments: ["aiswitch", "list", "--provider", "gemini"])?.command == .list(provider: .antigravity, json: false))
+    for refused in [["aiswitch", "use"], ["aiswitch", "list", "--provider", "cursor"], ["aiswitch", "frobnicate"]] {
         guard case .invalid = AgentCLI(arguments: refused)?.command else {
             Issue.record("\(refused) should be refused")
             continue

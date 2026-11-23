@@ -125,8 +125,15 @@ extension UUID {
 }
 
 extension AIProvider {
-    /// How `aiswitch` names the provider in its account lists: "CC" for Claude Code.
-    var listLabel: String { self == .claude ? "CC" : displayName }
+    /// How `aiswitch` names the provider in its account lists: "CC" for Claude Code,
+    /// "AGY" for Antigravity.
+    var listLabel: String {
+        switch self {
+        case .codex: "Codex"
+        case .claude: "CC"
+        case .antigravity: "AGY"
+        }
+    }
 }
 
 extension AccountStore {

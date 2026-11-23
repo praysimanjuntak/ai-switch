@@ -52,6 +52,7 @@ final class AccountStore: ObservableObject {
     private let identify: @Sendable (AIProvider, Data) async -> AccountIdentity?
     private let resetLimits: @Sendable (AIProvider, URL) async throws -> LimitResetOutcome
     private let liveClaude: LiveClaudeCredential
+    private let liveAntigravity: LiveAntigravityCredential
     private let codexFeed: CodexSessionFeed?
     private let omp: OmpBridge
     private let ompStateURL: URL
@@ -70,6 +71,7 @@ final class AccountStore: ObservableObject {
     /// Answers `aiswitch` while the app runs.
     private var agentServer: AgentCommandServer?
     private let isClaudeCodeRunning: @Sendable () async -> Bool
+    private let isAntigravityRunning: @Sendable () async -> Bool
     /// Optional self-hosted sync server that lets a phone read usage. Every
     /// persisted change is pushed, coalesced by the sync's debounce.
     let sync: RemoteSync
@@ -95,9 +97,15 @@ final class AccountStore: ObservableObject {
             try await UsageService.useLimitReset(provider: $0, directory: $1)
         },
         liveClaude: LiveClaudeCredential = .system,
+        liveAntigravity: LiveAntigravityCredential = .system,
         claudeCodeRunning: @escaping @Sendable () async -> Bool = {
             let result = try? await CommandRunner.run(executable: URL(fileURLWithPath: "/usr/bin/pgrep"),
                                                       arguments: ["-x", "claude"], timeout: 5)
+            return result?.exitCode == 0
+        },
+        antigravityRunning: @escaping @Sendable () async -> Bool = {
+            let result = try? await CommandRunner.run(executable: URL(fileURLWithPath: "/usr/bin/pgrep"),
+                                                      arguments: ["-x", "agy"], timeout: 5)
             return result?.exitCode == 0
         },
         codexSessions: URL? = FileManager.default.homeDirectoryForCurrentUser
@@ -112,7 +120,9 @@ final class AccountStore: ObservableObject {
         self.identify = identify
         self.resetLimits = resetLimits
         self.liveClaude = liveClaude
+        self.liveAntigravity = liveAntigravity
         isClaudeCodeRunning = claudeCodeRunning
+        isAntigravityRunning = antigravityRunning
         codexFeed = codexSessions.map { CodexSessionFeed(root: $0) }
         self.omp = omp
         ompStateURL = support.appendingPathComponent("omp.json")
@@ -160,7 +170,7 @@ final class AccountStore: ObservableObject {
     }
 
     func cliAvailable(for provider: AIProvider) -> Bool {
-        CommandRunner.locate(provider == .codex ? "codex" : "claude") != nil
+        CommandRunner.locate(provider.cliName) != nil
     }
 
     func addAccount(provider: AIProvider) async throws {
@@ -219,14 +229,22 @@ final class AccountStore: ObservableObject {
                 }
                 credential = data
                 try manager.writeOwnerOnly(data, to: ClaudeCredentialStore.credentialURL(configDirectory: directory))
+            case .antigravity:
+                guard let data = try await liveAntigravity.read() else {
+                    throw AISwitchError.notSignedIn(.antigravity)
+                }
+                credential = AntigravityCredentialStore.unwrapKeyringPayload(data)
+                try manager.writeOwnerOnly(credential, to: AntigravityCredentialStore.credentialURL(profileDirectory: directory))
             }
 
             var profile = newProfile(id: id, provider: provider, directory: directory)
-            // `~/.claude.json` can still name the previous account after a
-            // switch, so the credential's own account is looked up instead.
+            // `~/.claude.json` can still name the previous account after a switch,
+            // so the credential's own account is looked up instead.
             if let identity = await identify(provider, credential) {
                 profile.identity = identity
                 apply(ProviderInspection(email: identity.email), to: &profile)
+            } else if provider == .antigravity, let email = AntigravityCredentialStore.parse(credential)?.email {
+                apply(ProviderInspection(email: email), to: &profile)
             }
             if let inspection = try? await inspectProfile(profile) {
                 apply(inspection, to: &profile)
@@ -287,6 +305,8 @@ final class AccountStore: ObservableObject {
         if profile.provider == .codex {
             try CodexConfigEditor.ensureFileCredentialStore()
             try backupCurrentCodexCredential()
+        } else if profile.provider == .antigravity, let live = try? await liveAntigravity.read() {
+            try backupCurrentAntigravityCredential(live)
         }
         // Read after the outgoing credential was kept, in case it is this profile's.
         try await writeLiveCredential(savedCredential(of: profile), for: profile.provider)
@@ -508,6 +528,8 @@ final class AccountStore: ObservableObject {
             if provider == .codex {
                 try CodexConfigEditor.ensureFileCredentialStore()
                 try backupCurrentCodexCredential()
+            } else if provider == .antigravity, let live = try? await liveAntigravity.read() {
+                try backupCurrentAntigravityCredential(live)
             }
             try await writeLiveCredential(credential, for: provider)
             try? await pointClaudeCode(at: profile)
@@ -537,7 +559,11 @@ final class AccountStore: ObservableObject {
             throw AISwitchError.commandFailed("You signed in as \(signedInAs), but \(profile.displayName) is \(expected). "
                 + "Nothing was changed. Sign in again as \(expected), or use Add account to add \(signedInAs).")
         }
-        let kind = profile.provider == .claude ? "organization" : "workspace"
+        let kind = switch profile.provider {
+        case .claude: "organization"
+        case .codex: "workspace"
+        case .antigravity: "account"
+        }
         let chosen = ClaudeAccountRecord.organizationName(inConfigAt: staging.appendingPathComponent(".claude.json"))
         let expected = ClaudeAccountRecord.organizationName(
             inConfigAt: URL(fileURLWithPath: profile.profileDirectory).appendingPathComponent(".claude.json"))
@@ -552,19 +578,31 @@ final class AccountStore: ObservableObject {
         if provider == .claude { await liveClaude.deleteProfileItem(directory.path) }
     }
 
-    /// A Claude sign-in expires about eight hours after Claude Code last used it.
-    /// An expired one is renewed the way Renew sign-in does it, with one
-    /// tool-less Claude Code message. A failed attempt is reported and not
-    /// repeated for an hour. The active account is left to Claude Code while it
-    /// runs: two renewals of one sign-in at once can sign Claude Code out.
+    /// A Claude sign-in expires about eight hours after Claude Code last used it,
+    /// and an Antigravity access token expires about an hour after it was issued.
+    /// An expired one is renewed the way Renew sign-in does it, with one small
+    /// CLI turn. A failed attempt is reported and not repeated for an hour. For
+    /// Claude, the active account is left to Claude Code while it runs: two
+    /// renewals of one rotating sign-in at once can sign Claude Code out. For
+    /// Antigravity, renewal temporarily swaps `agy`'s single global Keychain item,
+    /// so automatic renewal waits while `agy` is running.
     private func renewExpiredSignIn(_ id: UUID) async {
-        guard let profile = profiles.first(where: { $0.id == id }), profile.provider == .claude else { return }
+        guard let profile = profiles.first(where: { $0.id == id }),
+              profile.provider == .claude || profile.provider == .antigravity else { return }
         if let failure = autoRenewFailures[id], failure.retryAt > Date() {
             setIssue(failure.message, on: id)
             return
         }
-        if isActive(profile), await isClaudeCodeRunning() {
+        if profile.provider == .claude, isActive(profile), await isClaudeCodeRunning() {
             setIssue("Claude Code is running with this account and renews its sign-in when it's next used.", on: id)
+            return
+        }
+        if profile.provider == .antigravity, await isAntigravityRunning() {
+            if isActive(profile) {
+                setIssue("Antigravity is running with this account and renews its sign-in when it's next used.", on: id)
+            } else {
+                setIssue("Antigravity is running. Quit it or choose Renew sign-in when idle to renew this account.", on: id)
+            }
             return
         }
         if await check(id, renewal: .automatic) == .renewalFailed,
@@ -672,10 +710,13 @@ final class AccountStore: ObservableObject {
             return .other
         } catch {
             var expired = false
-            if case AISwitchError.claudeSessionExpired = error { expired = true }
+            switch error {
+            case AISwitchError.claudeSessionExpired, AISwitchError.antigravitySessionExpired: expired = true
+            default: break
+            }
             if expired, !renewing { return .signInExpired }
             if renewal == .automatic, !renewed || expired {
-                let reason = renewed ? "Claude still reports it as expired. Choose Sign in again." : error.localizedDescription
+                let reason = renewed ? "\(profile.provider.shortName) still reports it as expired. Choose Sign in again." : error.localizedDescription
                 setIssue("Unable to renew sign-in: \(reason)", on: id)
                 return .renewalFailed
             }
@@ -847,6 +888,19 @@ final class AccountStore: ObservableObject {
         try manager.writeOwnerOnly(Data(contentsOf: liveCodexCredential), to: destination)
     }
 
+    private func backupCurrentAntigravityCredential(_ data: Data) throws {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyyMMdd-HHmmss"
+        let destination = backupsRoot.appendingPathComponent("antigravity-oauth-\(formatter.string(from: Date())).json")
+        try manager.writeOwnerOnly(AntigravityCredentialStore.unwrapKeyringPayload(data), to: destination)
+    }
+
+    private func credentialsEquivalent(_ lhs: Data, _ rhs: Data?, for provider: AIProvider) -> Bool {
+        guard let rhs else { return false }
+        if lhs == rhs { return true }
+        return provider == .antigravity && AntigravityCredentialStore.areEquivalent(lhs, rhs)
+    }
+
     /// What the live credential is to a profile.
     private enum LiveCredential {
         /// The CLI is signed out.
@@ -858,8 +912,8 @@ final class AccountStore: ObservableObject {
         case newer(Data, identity: AccountIdentity?)
         /// Another account's.
         case foreign(Data, identity: AccountIdentity)
-        /// Changed, but whose it is can't be checked right now: a Claude token
-        /// that already expired, or no network.
+        /// Changed, but whose it is can't be checked right now: a token that
+        /// already expired, or no network.
         case unverified(Data)
     }
 
@@ -867,10 +921,15 @@ final class AccountStore: ObservableObject {
     private func liveCredential(for profile: AccountProfile) async -> LiveCredential {
         guard let live = try? await readLiveCredential(profile.provider) else { return .none }
         let saved = try? savedCredential(of: profile)
-        if live == saved { return .saved(live) }
+        if credentialsEquivalent(live, saved, for: profile.provider) { return .saved(live) }
         if profile.provider == .claude, let saved, let token = ClaudeCredentialStore.refreshToken(from: live),
            token == ClaudeCredentialStore.refreshToken(from: saved) {
             // The same sign-in: only the access token or MCP sign-ins changed.
+            return .newer(live, identity: nil)
+        }
+        if profile.provider == .antigravity, let saved, let token = AntigravityCredentialStore.refreshToken(from: live),
+           token == AntigravityCredentialStore.refreshToken(from: saved) {
+            // The same Google sign-in: only the access token refreshed.
             return .newer(live, identity: nil)
         }
         guard let identity = await identify(profile.provider, live) else { return .unverified(live) }
@@ -967,8 +1026,9 @@ final class AccountStore: ObservableObject {
     /// Returns what is live afterwards, or nil when it was left alone.
     private func publishCredential(of profile: AccountProfile, replacing expected: Data) async throws -> Data? {
         let saved = try savedCredential(of: profile)
-        guard saved != expected else { return expected }
-        guard try await readLiveCredential(profile.provider) == expected else { return nil }
+        guard !credentialsEquivalent(saved, expected, for: profile.provider) else { return expected }
+        guard let live = try await readLiveCredential(profile.provider),
+              credentialsEquivalent(live, expected, for: profile.provider) else { return nil }
         try await writeLiveCredential(saved, for: profile.provider)
         return saved
     }
@@ -976,7 +1036,11 @@ final class AccountStore: ObservableObject {
     /// Saves `credential` into the profile, recording whose it is when the profile
     /// didn't know yet; the next `save()` persists that.
     private func writeCredential(_ credential: Data, into profile: AccountProfile, identity: AccountIdentity?) throws {
-        try manager.writeOwnerOnly(credential, to: credentialURL(of: profile))
+        let destination = credentialURL(of: profile)
+        let data = profile.provider == .antigravity
+            ? AntigravityCredentialStore.merge(newer: credential, into: try? Data(contentsOf: destination))
+            : credential
+        try manager.writeOwnerOnly(data, to: destination)
         guard let identity, let index = profiles.firstIndex(where: { $0.id == profile.id }),
               profiles[index].identity == nil else { return }
         profiles[index].identity = identity
@@ -990,6 +1054,8 @@ final class AccountStore: ObservableObject {
             return try Data(contentsOf: liveCodexCredential)
         case .claude:
             return try await liveClaude.read()
+        case .antigravity:
+            return try await liveAntigravity.read()
         }
     }
 
@@ -997,6 +1063,7 @@ final class AccountStore: ObservableObject {
         switch provider {
         case .codex: try manager.writeOwnerOnly(credential, to: liveCodexCredential)
         case .claude: try await liveClaude.write(credential)
+        case .antigravity: try await liveAntigravity.write(credential)
         }
     }
 
@@ -1009,6 +1076,7 @@ final class AccountStore: ObservableObject {
         switch provider {
         case .codex: return directory.appendingPathComponent("auth.json")
         case .claude: return ClaudeCredentialStore.credentialURL(configDirectory: directory)
+        case .antigravity: return AntigravityCredentialStore.credentialURL(profileDirectory: directory)
         }
     }
 

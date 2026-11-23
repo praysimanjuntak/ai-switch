@@ -90,9 +90,11 @@
         const node = el.card.content.firstElementChild.cloneNode(true);
         node.dataset.provider = account.provider;
         node.classList.toggle("active", account.isActive);
-        node.querySelector(".logo").src = account.provider === "codex" ? "/openai.svg" : "/anthropic.png";
+        const logos = { codex: "/openai.svg", claude: "/anthropic.png", antigravity: "/antigravity.svg" };
+        const names = { codex: "Codex", claude: "Claude Code", antigravity: "Antigravity" };
+        node.querySelector(".logo").src = logos[account.provider] || "/openai.svg";
         node.querySelector(".name").textContent = account.displayName;
-        node.querySelector(".subtitle").textContent = account.email || account.plan || (account.provider === "codex" ? "Codex" : "Claude Code");
+        node.querySelector(".subtitle").textContent = account.email || account.plan || names[account.provider] || account.provider;
         node.querySelector(".active-pill").classList.toggle("hidden", !account.isActive);
         const plan = node.querySelector(".plan");
         if (account.plan) {
@@ -104,7 +106,7 @@
         const [sessionMeter, weeklyMeter] = meters.querySelectorAll(".meter");
         renderMeter(sessionMeter, account.usage?.session ?? null, now, stale);
         renderMeter(weeklyMeter, account.usage?.weekly ?? null, now, stale);
-        // Per-model weekly buckets (Claude's "Fable" limit, for example).
+        // Per-model weekly buckets (e.g. Claude's "Fable" or Antigravity's "Claude/GPT").
         for (const scoped of account.usage?.scoped ?? []) {
           const meter = weeklyMeter.cloneNode(true);
           meter.querySelector(".caption").textContent = `Weekly · ${scoped.name}`;

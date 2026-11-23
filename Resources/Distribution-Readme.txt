@@ -1,11 +1,11 @@
 AI SWITCH — EARLY BETA
 
-A compact account switcher for Codex and Claude Code.
+A compact account switcher for Codex, Claude Code, and Antigravity.
 
 REQUIREMENTS
 
 macOS 14 Sonoma or newer, on Apple Silicon or Intel.
-Install the Codex and/or Claude Code CLI separately. They are not bundled.
+Install the Codex, Claude Code, and/or Antigravity CLI (agy) separately. They are not bundled.
 Swift and Xcode are not needed to run this app.
 Sign in with your own accounts; this disk image contains no saved accounts.
 
@@ -47,7 +47,7 @@ Import to add the new one.
 
 Switches apply to new CLI sessions; existing sessions can keep their old login.
 Usage integrations depend on provider CLI/API behavior and can change. This is
-an independent app, not an official OpenAI or Anthropic product.
+an independent app, not an official OpenAI, Anthropic, or Google product.
 
 Your profiles and credential backups live in:
   ~/Library/Application Support/AI Switch/

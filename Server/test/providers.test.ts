@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { parseClaudeUsage, parseCodexUsage } from "../src/providers";
+import { parseAntigravityModelBuckets, parseAntigravityQuotaSummary, parseClaudeUsage, parseCodexUsage } from "../src/providers";
 
 const now = new Date("2026-09-15T16:00:00Z");
 
@@ -57,5 +57,77 @@ describe("Claude /api/oauth/usage", () => {
     const usage = parseClaudeUsage({ five_hour: { utilization: 3 } }, now);
     expect(usage.session).toEqual({ usedPercent: 3, resetsAt: null });
     expect(usage.weekly).toBeNull();
+  });
+});
+
+describe("Antigravity /v1internal:retrieveUserQuotaSummary", () => {
+  test("maps Gemini 5h/weekly to session/weekly and 3p shared bucket to Claude/GPT scoped", () => {
+    const usage = parseAntigravityQuotaSummary(
+      {
+        groups: [
+          {
+            id: "gemini-models",
+            displayName: "Gemini models",
+            buckets: [
+              { bucketId: "gemini-5h", window: "5h", remainingFraction: 0.72, resetTime: "2026-09-15T20:00:00Z" },
+              { bucketId: "gemini-weekly", window: "weekly", remainingFraction: 0.45, resetTime: "2026-09-20T00:00:00Z" },
+            ],
+          },
+          {
+            id: "3p-models",
+            displayName: "Claude and GPT models",
+            buckets: [
+              { bucketId: "3p-weekly", window: "weekly", remainingFraction: 0.2, resetTime: "2026-09-21T00:00:00Z" },
+            ],
+          },
+        ],
+      },
+      now,
+    );
+    expect(usage.session).toEqual({ usedPercent: 28, resetsAt: "2026-09-15T20:00:00.000Z" });
+    expect(usage.weekly).toEqual({ usedPercent: 55, resetsAt: "2026-09-20T00:00:00.000Z" });
+    expect(usage.scoped).toEqual([{ name: "Claude/GPT", window: { usedPercent: 80, resetsAt: "2026-09-21T00:00:00.000Z" } }]);
+    expect(usage.note).toBeNull();
+  });
+
+  test("surfaces 3p buckets directly when Gemini group is omitted and notes empty groups", () => {
+    const only3p = parseAntigravityQuotaSummary(
+      {
+        groups: [
+          {
+            id: "3p-models",
+            buckets: [
+              { bucketId: "3p-5h", window: "5h", remainingFraction: 0.6, resetTime: "2026-09-15T20:00:00Z" },
+              { bucketId: "3p-weekly", window: "weekly", remainingFraction: 0.85, resetTime: "2026-09-20T00:00:00Z" },
+            ],
+          },
+        ],
+      },
+      now,
+    );
+    expect(only3p.session).toEqual({ usedPercent: 40, resetsAt: "2026-09-15T20:00:00.000Z" });
+    expect(only3p.weekly).toEqual({ usedPercent: 15, resetsAt: "2026-09-20T00:00:00.000Z" });
+    expect(only3p.scoped).toEqual([]);
+
+    const empty = parseAntigravityQuotaSummary({ groups: [] }, now);
+    expect(empty.session).toBeNull();
+    expect(empty.weekly).toBeNull();
+    expect(empty.note).toContain("did not report");
+  });
+
+  test("falls back cleanly to per-model retrieveUserQuota buckets", () => {
+    const usage = parseAntigravityModelBuckets(
+      {
+        buckets: [
+          { modelId: "gemini-2.5-pro", remainingFraction: 0.42, resetTime: "2026-09-16T02:00:00Z" },
+          { modelId: "gemini-2.5-pro_vertex", remainingFraction: 0.05, resetTime: "2026-09-16T01:00:00Z" },
+          { modelId: "gemini-2.5-flash", remainingFraction: 0.85, resetTime: "2026-09-16T05:00:00Z" },
+        ],
+      },
+      now,
+    );
+    expect(usage.session).toEqual({ usedPercent: 58, resetsAt: "2026-09-16T02:00:00.000Z" });
+    expect(usage.weekly).toEqual({ usedPercent: 15, resetsAt: "2026-09-16T05:00:00.000Z" });
+    expect(usage.note).toBeNull();
   });
 });

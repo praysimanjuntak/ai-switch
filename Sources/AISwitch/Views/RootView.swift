@@ -68,7 +68,7 @@ struct RootView: View {
                 Text("Accounts")
                     .font(.system(size: 26, weight: .semibold))
                     .tracking(-0.6)
-                Text("Choose the account Codex and Claude Code use. Switches apply to new sessions.")
+                Text("Choose the account Codex, Claude Code, and Antigravity use. Switches apply to new sessions.")
                     .font(.system(size: 12.5))
                     .foregroundStyle(AppPalette.secondaryInk)
             }

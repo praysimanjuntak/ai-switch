@@ -3,6 +3,7 @@ import Foundation
 enum AIProvider: String, Codable, CaseIterable, Identifiable, Sendable {
     case codex
     case claude
+    case antigravity
 
     var id: String { rawValue }
 
@@ -10,6 +11,7 @@ enum AIProvider: String, Codable, CaseIterable, Identifiable, Sendable {
         switch self {
         case .codex: "Codex"
         case .claude: "Claude Code"
+        case .antigravity: "Antigravity"
         }
     }
 
@@ -17,6 +19,15 @@ enum AIProvider: String, Codable, CaseIterable, Identifiable, Sendable {
         switch self {
         case .codex: "Codex"
         case .claude: "Claude"
+        case .antigravity: "Antigravity"
+        }
+    }
+
+    var cliName: String {
+        switch self {
+        case .codex: "codex"
+        case .claude: "claude"
+        case .antigravity: "agy"
         }
     }
 }
@@ -38,7 +49,8 @@ struct ScopedUsageWindow: Codable, Equatable, Sendable {
 
 extension UsageSnapshot {
     /// Each limit under the name the app shows it by: 5-hour and weekly,
-    /// reported or not, then per-model weekly limits such as "Fable weekly".
+    /// reported or not, then per-model weekly limits such as "Fable weekly"
+    /// or Antigravity's "Claude/GPT weekly".
     static func namedWindows(of usage: UsageSnapshot?) -> [(name: String, window: UsageWindow?)] {
         [("5-hour", usage?.session), ("Weekly", usage?.weekly)] + (usage?.scoped ?? []).map { ("\($0.name) weekly", $0.window) }
     }
@@ -103,7 +115,7 @@ struct UsageSnapshot: Codable, Equatable, Sendable {
 /// Who a credential signs in as. Only a credential of the same account may
 /// replace a profile's saved one.
 struct AccountIdentity: Codable, Equatable, Sendable {
-    /// Claude account UUID, or ChatGPT user ID.
+    /// Claude account UUID, ChatGPT user ID, or Google account subject (`sub`).
     var user: String
     /// Claude organization UUID, or ChatGPT account (workspace) ID, when reported.
     var organization: String?
@@ -165,6 +177,7 @@ enum AISwitchError: LocalizedError, Sendable {
     case credentialsMissing(AIProvider)
     case invalidResponse(String)
     case claudeSessionExpired
+    case antigravitySessionExpired
     case usageRateLimited(AIProvider)
 
     var errorDescription: String? {
@@ -187,6 +200,8 @@ enum AISwitchError: LocalizedError, Sendable {
             message
         case .claudeSessionExpired:
             "Claude's sign-in for this account needs renewing. Use Renew sign-in, or start a Claude Code session with it active, then refresh."
+        case .antigravitySessionExpired:
+            "Antigravity's sign-in for this account needs renewing. Use Renew sign-in, or start an agy session with it active, then refresh."
         case .usageRateLimited(let provider):
             "\(provider.displayName) is limiting how often this account's usage can be checked. AI Switch checks again later; the rings show the last usage."
         }

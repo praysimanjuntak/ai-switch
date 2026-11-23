@@ -10,6 +10,7 @@
   --danger: #c24a40;
   --codex: #306354;
   --claude: #b85e42;
+  --antigravity: #3668b3;
   color-scheme: light;
 }
 
@@ -81,9 +82,11 @@ main { flex: 1; padding: 6px 14px 14px; }
 .logo { width: 18px; height: 18px; }
 .card[data-provider="codex"] { --accent: var(--codex); }
 .card[data-provider="claude"] { --accent: var(--claude); }
+.card[data-provider="antigravity"] { --accent: var(--antigravity); }
 /* Tint the single-colour marks with the provider accent. */
 .card[data-provider="codex"] .logo { filter: brightness(0) saturate(100%) invert(30%) sepia(24%) saturate(700%) hue-rotate(115deg) brightness(90%); }
 .card[data-provider="claude"] .logo { filter: brightness(0) saturate(100%) invert(45%) sepia(45%) saturate(700%) hue-rotate(335deg) brightness(90%); }
+.card[data-provider="antigravity"] .logo { filter: brightness(0) saturate(100%) invert(35%) sepia(55%) saturate(900%) hue-rotate(192deg) brightness(92%) contrast(92%); }
 
 .who { min-width: 0; flex: 1; }
 .name { font-weight: 600; font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

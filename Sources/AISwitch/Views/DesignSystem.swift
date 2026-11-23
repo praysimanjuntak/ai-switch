@@ -8,6 +8,7 @@ extension AIProvider {
         switch self {
         case .codex: Self.openAI
         case .claude: Self.anthropic
+        case .antigravity: Self.google
         }
     }
 
@@ -15,20 +16,23 @@ extension AIProvider {
         switch self {
         case .codex: "OpenAI"
         case .claude: "Anthropic"
+        case .antigravity: "Google"
         }
     }
 
     /// The mark's own color: OpenAI's is black; Claude's is the orange Claude
-    /// Code itself uses for its brand.
+    /// Code itself uses for its brand; Antigravity's is Google blue.
     var markColor: Color {
         switch self {
         case .codex: AppPalette.ink
         case .claude: Color(red: 215 / 255, green: 119 / 255, blue: 87 / 255)
+        case .antigravity: Color(red: 66 / 255, green: 133 / 255, blue: 244 / 255)
         }
     }
 
     private static let openAI = templateImage("openai", extension: "svg")
     private static let anthropic = templateImage("anthropic", extension: "png")
+    private static let google = templateImage("antigravity", extension: "svg")
 
     /// SwiftPM's generated `Bundle.module` only looks beside the executable and
     /// at the absolute build path, which is wrong for an app bundle and, when the
@@ -254,7 +258,8 @@ struct UsageRing: View {
     }
 
     /// The limits an account shows, at most three: 5-hour, weekly, then a
-    /// per-model weekly limit such as Claude's Fable bucket.
+    /// per-model weekly limit such as Claude's Fable or Antigravity's
+    /// Claude/GPT bucket.
     static func limits(of usage: UsageSnapshot?) -> [Limit] {
         UsageSnapshot.namedWindows(of: usage).prefix(3).map { Limit(title: $0.name, window: $0.window) }
     }

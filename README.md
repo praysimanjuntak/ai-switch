@@ -4,11 +4,11 @@
 
 # AI Switch
 
-AI Switch is a native macOS app for moving quickly between Codex and Claude Code accounts. Its clean white window shows every account as a card in a three-column grid, with up to three of its limits (five-hour, weekly, and per-model) as rings that run down from green to yellow to red, with what's left written inside, plus isolated profiles and one-click activation. The menu-bar panel shows the same rings and includes quick account switching.
+AI Switch is a native macOS app for moving quickly between Codex, Claude Code, and Antigravity accounts. Its clean white window shows every account as a card in a three-column grid, with up to three of its limits (five-hour, weekly, and per-model such as Claude's Fable or Antigravity's Claude/GPT bucket) as rings that run down from green to yellow to red, with what's left written inside, plus isolated profiles and one-click activation. The menu-bar panel shows the same rings and includes quick account switching.
 
 **Native SwiftUI · macOS 14+ · Apple Silicon & Intel · Early beta**
 
-An independent project, not an official OpenAI or Anthropic app.
+An independent project, not an official OpenAI, Anthropic, or Google app.
 
 ## Download and install
 
@@ -16,7 +16,7 @@ An independent project, not an official OpenAI or Anthropic app.
 
 1. Open the DMG and drag **AI Switch** to **Applications**.
 2. Eject the image, then launch the installed app.
-3. Install the Codex and/or Claude Code CLI separately if needed.
+3. Install the Codex, Claude Code, and/or Antigravity CLI (`agy`) separately if needed.
 4. Use **Import** for an existing account or **Add account** to sign in with your own account.
 
 Instead of steps 1 and 2, you can install it with [Homebrew](https://brew.sh) (0.8.0 and later) and update it later with `brew upgrade --cask ai-switch`:
@@ -37,14 +37,16 @@ shasum -a 256 -c AI-Switch-0.10.1-macOS-universal-beta.dmg.sha256
 
 ## What works
 
-- Add Codex or Claude Code accounts through each installed CLI's browser OAuth flow.
+- Add Codex, Claude Code, or Antigravity (`agy`) accounts through each installed CLI's browser OAuth flow.
 - Cancel a pending sign-in with **Cancel sign-in**, the close button, or **Escape**. Failed sign-ins can be retried without reopening the app (0.2.3 and later).
 - Import the accounts that are already active in your CLIs.
 - Keep each Codex `auth.json` in its own owner-only (`0600`) profile directory.
 - Keep each Claude Code profile as an owner-only `.credentials.json` in its own profile directory, the same file Claude Code itself reads when `CLAUDE_CONFIG_DIR` points there. No Keychain items, no permission dialogs (0.3.0 and later).
+- Keep each Antigravity profile as an owner-only `credentials.json` in its own profile directory. Switching swaps Antigravity CLI's single login Keychain entry (`gemini` / `antigravity`, `go-keyring-base64:`-encoded through `/usr/bin/security`, or its fallback `~/.gemini/antigravity-cli/antigravity-oauth-token`) after saving any refreshed token from the outgoing account. Adding or re-signing an account snapshots and always restores the active login if cancelled or rejected.
 - Activate an account for new CLI sessions with one click.
 - Read Codex limits through the local Codex app-server protocol.
 - Read Claude Code's five-hour and seven-day limit data from the same authenticated usage surface used by the CLI.
+- Read Antigravity's 5-hour, weekly, and Claude/GPT quota limits plus subscription tier from Cloud Code Assist (`daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist` and `v1internal:retrieveUserQuotaSummary`, falling back to `v1internal:retrieveUserQuota`), and automatically renew expired access tokens through `agy` when `agy` is idle.
 - Renew expired Claude sign-ins automatically (0.7.0 and later). A Claude sign-in expires about eight hours after Claude Code last used it; AI Switch then renews it the way **Renew sign-in** does, with one small Claude Code message on that account. If that fails, the card says **Unable to renew sign-in** with the reason, and AI Switch waits an hour before trying again; **Renew sign-in** (in the card's **Needs attention** popover, its actions menu, and the menu-bar panel) tries right away. While Claude Code is running, its active account is left for Claude Code to renew, since two renewals of one sign-in at once can sign Claude Code out. Codex renews its own sign-ins during usage checks.
 - Sign an account in again without removing it (0.9.0 and later). When a sign-in can't be renewed any more, for example a Claude sign-in past its roughly 30 days or a Codex sign-in that was revoked, **Sign in again…** in the card's actions menu or its **Needs attention** popover runs the same browser sign-in as **Add account** and replaces only that account's saved sign-in; its name, settings, and usage history stay. Signing in as a different account, or in another organization or workspace of the same login, changes nothing and says which account you signed in as. When the account is active, the CLI gets the new sign-in too, unless it has meanwhile signed in to another account.
 - See Codex usage live: Codex records its rate limits in its session logs after every turn, and AI Switch reads them within seconds, with no network request, attributing each one to the saved account that ran it. Every account is also checked every five minutes and on demand. Anthropic rate-limits Claude's usage endpoint and has been reported to refuse polling at 30–60 second intervals for hours; when it refuses a check, AI Switch waits longer before the next one for that account (15 minutes, doubling up to an hour) instead of retrying on schedule, and the card says so.
@@ -67,7 +69,7 @@ aiswitch use me@example.com --provider codex
 
 An account is named by the ID `aiswitch list` shows (the first 8 characters of its id; longer parts of the id, up to the whole id from `--json`, work too), its name, or its email. An email isn't always unique: one email can sign in to several Claude organizations, each saved as its own account. When a name or email matches more than one account, nothing switches and the answer lists them with their IDs. `use` works like **Switch** in the app: sessions already running keep their account. Sign-ins are never printed.
 
-With `--json`, `list` answers `{"ok": true, "accounts": [...]}`. Each account has `id`, `provider` (`claude` or `codex`), `name`, `email`, `plan`, `active`, `needsAttention`, `usageCheckedAt`, and `limits`, a list of `name` (`5-hour`, `Weekly`, or a per-model limit such as `Fable weekly`), `leftPercent`, and `resetsAt`. `use` answers with the account it switched to. A failure answers `{"ok": false, "error": "..."}` and exits with status 1; a mistyped command exits with 2.
+With `--json`, `list` answers `{"ok": true, "accounts": [...]}`. Each account has `id`, `provider` (`claude`, `codex`, or `antigravity`; `--provider agy` is also accepted), `name`, `email`, `plan`, `active`, `needsAttention`, `usageCheckedAt`, and `limits`, a list of `name` (`5-hour`, `Weekly`, or a per-model weekly limit such as `Fable weekly` or `Claude/GPT weekly`), `leftPercent`, and `resetsAt`. `use` answers with the account it switched to. A failure answers `{"ok": false, "error": "..."}` and exits with status 1; a mistyped command exits with 2.
 
 The command installs itself. Homebrew links it into its `bin` folder. A copy installed from the DMG links it into `~/.local/bin`, the folder Claude Code's own installer uses, when the app starts, unless another program already uses the name there. `aiswitch` is the app's own executable, and the running app does the switching over an owner-only socket in its support folder, so the window and the command never change accounts at the same time. If the app isn't running, `list` reads the saved account list and `use` starts the app in the background.
 
@@ -94,7 +96,7 @@ An access token that has passed its expiry is reported as needing renewal rather
 ## Requirements
 
 - macOS 14 or newer
-- `codex` and/or `claude` installed and available in a common binary location
+- `codex`, `claude`, and/or `agy` (Antigravity CLI) installed and available in a common binary location
 - Building from source additionally requires Swift 6 (the Apple Command Line Tools are enough). Recipients do not need Swift or Xcode.
 
 ## Build and run
@@ -148,6 +150,7 @@ Profile metadata is stored at `~/Library/Application Support/AI Switch/profiles.
 
 - Codex: `GET https://chatgpt.com/backend-api/wham/usage` with the profile's access token and `ChatGPT-Account-Id`.
 - Claude Code: `GET https://api.anthropic.com/api/oauth/usage` with the profile's OAuth access token.
+- Antigravity: `POST https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary` (falling back to `loadCodeAssist` + `retrieveUserQuota` when needed) with the profile's OAuth access token.
 
 **What leaves the Mac:** account names, emails, plans, cached usage, and each account's current **access token** with its expiry. **Refresh tokens never leave the Mac.** Both providers rotate refresh tokens, so a second refresher would log the Mac out; the server therefore only reads usage until a token expires (about 10 days for Codex, 8 hours for Claude Code) and then shows the last known numbers with "token expired" until the Mac checks in again. Reset countdowns keep working offline.
 

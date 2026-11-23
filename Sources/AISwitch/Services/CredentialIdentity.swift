@@ -4,9 +4,9 @@ import Foundation
 /// ever saved into the profile of the account it signs in as.
 enum CredentialIdentity {
     /// Who `credential` signs in as, or nil when that can't be told right now.
-    /// Codex tokens name their user. A Claude credential doesn't, so Anthropic
-    /// is asked, the way Claude Code attributes a refreshed credential; an
-    /// expired Claude token can't be asked about.
+    /// Codex tokens and Antigravity ID tokens name their user offline. A Claude
+    /// credential (or an Antigravity credential without an `id_token`) asks the
+    /// provider's profile endpoint; an expired token can't be asked about.
     static func identify(_ provider: AIProvider, credential: Data) async -> AccountIdentity? {
         switch provider {
         case .codex:
@@ -14,7 +14,21 @@ enum CredentialIdentity {
         case .claude:
             guard let token = try? ClaudeCredentialStore.accessToken(from: credential) else { return nil }
             return try? await UsageService.fetchClaudeIdentity(accessToken: token)
+        case .antigravity:
+            if let offline = antigravity(credentialData: credential) { return offline }
+            guard let token = try? AntigravityCredentialStore.accessToken(from: credential) else { return nil }
+            return try? await UsageService.fetchGoogleIdentity(accessToken: token)
         }
+    }
+
+    /// The Google account an Antigravity credential signs in as, from its
+    /// unverified OIDC `id_token` claims when present.
+    static func antigravity(credentialData: Data) -> AccountIdentity? {
+        guard let parsed = AntigravityCredentialStore.parse(credentialData),
+              let idToken = parsed.idToken,
+              let claims = jwtClaims(idToken),
+              let sub = claims["sub"] as? String, !sub.isEmpty else { return nil }
+        return AccountIdentity(user: sub, organization: nil, email: (claims["email"] as? String) ?? parsed.email)
     }
 
     /// The user and ChatGPT account a Codex `auth.json` signs in as, from its

@@ -1,7 +1,7 @@
 {
   "name": "AI Switch",
   "short_name": "AI Switch",
-  "description": "Usage limits for your Codex and Claude Code accounts.",
+  "description": "Usage limits for your Codex, Claude Code, and Antigravity accounts.",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",

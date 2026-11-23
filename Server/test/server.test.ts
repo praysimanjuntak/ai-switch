@@ -21,6 +21,35 @@ function harness(): Harness {
       Response.json({ rate_limit: { primary_window: { used_percent: 40, limit_window_seconds: 18000, reset_at: 1789498080 } } }),
     "https://api.anthropic.com/api/oauth/usage?at_wall=1&skip_spend=1": () =>
       Response.json({ five_hour: { utilization: 20, resets_at: "2026-09-15T20:00:00Z" }, seven_day: { utilization: 60, resets_at: "2026-09-18T00:00:00Z" } }),
+    "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary": () =>
+      Response.json({
+        groups: [
+          {
+            id: "gemini-models",
+            displayName: "Gemini models",
+            buckets: [
+              { bucketId: "gemini-5h", window: "5h", remainingFraction: 0.72, resetTime: "2026-09-15T20:00:00Z" },
+              { bucketId: "gemini-weekly", window: "weekly", remainingFraction: 0.9, resetTime: "2026-09-20T00:00:00Z" },
+            ],
+          },
+          {
+            id: "3p-models",
+            displayName: "Claude and GPT models",
+            buckets: [
+              { bucketId: "3p-weekly", window: "weekly", remainingFraction: 0.55, resetTime: "2026-09-20T00:00:00Z" },
+            ],
+          },
+        ],
+      }),
+    "https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist": () =>
+      Response.json({ cloudaicompanionProject: "proj-123", paidTier: { id: "g1-pro-tier" } }),
+    "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota": () =>
+      Response.json({
+        buckets: [
+          { modelId: "gemini-2.5-pro", remainingFraction: 0.65, resetTime: "2026-09-16T04:00:00Z" },
+          { modelId: "gemini-2.5-flash", remainingFraction: 0.9, resetTime: "2026-09-16T04:00:00Z" },
+        ],
+      }),
   };
   const fetchImpl = (async (input: string | URL | Request) => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
@@ -57,6 +86,16 @@ const claude = {
   plan: "pro",
   isActive: true,
   token: { accessToken: "claude-access", accountId: null, expiresAt: "2026-09-16T00:15:01Z" },
+  usage: null,
+};
+const antigravity = {
+  id: "antigravity-1",
+  provider: "antigravity" as const,
+  displayName: "agy-main",
+  email: "pray@gmail.com",
+  plan: "pro",
+  isActive: true,
+  token: { accessToken: "ya29.antigravity-access", accountId: null, expiresAt: "2026-09-15T17:00:00Z" },
   usage: null,
 };
 
@@ -162,10 +201,46 @@ describe("sync server", () => {
 
   test("malformed pushes are rejected before touching stored accounts", async () => {
     await h.handle(push([codex]));
-    const bad = await h.handle(push([{ ...codex, provider: "gemini" as never }]));
+    const bad = await h.handle(push([{ ...codex, provider: "unknown" as never }]));
     expect(bad.status).toBe(400);
     const token = await pair(h);
     expect((await view(h, token)).accounts).toHaveLength(1);
+  });
+
+  test("a viewer sees live Antigravity usage from retrieveUserQuotaSummary and falls back to retrieveUserQuota when empty", async () => {
+    expect((await h.handle(push([antigravity]))).status).toBe(204);
+    const token = await pair(h);
+    const first = await view(h, token);
+    expect(first.accounts[0].provider).toBe("antigravity");
+    expect(first.accounts[0].usage?.session?.usedPercent).toBe(28);
+    expect(first.accounts[0].usage?.weekly?.usedPercent).toBe(10);
+    expect(first.accounts[0].usage?.scoped).toEqual([{ name: "Claude/GPT", window: { usedPercent: 45, resetsAt: "2026-09-20T00:00:00.000Z" } }]);
+    expect(first.accounts[0].usageSource).toBe("live");
+    expect(JSON.stringify(first)).not.toContain("ya29.antigravity-access");
+    expect(h.calls).toEqual(["https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary"]);
+
+    // When summary returns 404, server discovers project via loadCodeAssist and calls retrieveUserQuota.
+    h.calls.length = 0;
+    h.responses["https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary"] = () => new Response("", { status: 404 });
+    h.clock.now = new Date(h.clock.now.getTime() + 61_000);
+    const fallback = await view(h, token);
+    expect(fallback.accounts[0].usage?.session?.usedPercent).toBe(35);
+    expect(fallback.accounts[0].usage?.weekly?.usedPercent).toBe(10);
+    expect(h.calls).toEqual([
+      "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary",
+      "https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist",
+      "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota",
+    ]);
+
+    // When the Mac already pushed the discovered project ID, loadCodeAssist is skipped on fallback.
+    h.calls.length = 0;
+    h.clock.now = new Date(h.clock.now.getTime() + 61_000);
+    expect((await h.handle(push([{ ...antigravity, token: { ...antigravity.token, accountId: "proj-cached" } }]))).status).toBe(204);
+    await view(h, token);
+    expect(h.calls).toEqual([
+      "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary",
+      "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota",
+    ]);
   });
 
   test("accepts a push whose optional fields are omitted, as the Mac encoder does", async () => {
