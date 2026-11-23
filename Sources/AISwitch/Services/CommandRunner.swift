@@ -12,6 +12,8 @@ struct CommandSession: Sendable {
     let send: @Sendable (String) throws -> Void
     /// stdout and stderr merged, one element per line (no trailing newline), ending at EOF.
     let lines: AsyncStream<String>
+    /// Waits for the child to exit by itself and returns its exit status.
+    let exitStatus: @Sendable () async -> Int32
 }
 
 /// Owns one CLI invocation. Cancellation is forwarded across the detached I/O
@@ -29,6 +31,10 @@ private final class RunningCommand: @unchecked Sendable {
     private var finished = false
     private var timeoutWork: DispatchWorkItem?
     private var killWork: DispatchWorkItem?
+    /// Left once the child has exited. `Process.waitUntilExit()` can wait for good
+    /// when another thread calls it just as the child exits, as when a cancelled
+    /// sign-in stopped `agy`, so exits are awaited through the termination handler.
+    private let exited = DispatchGroup()
 
     init(
         executable: URL,
@@ -55,6 +61,8 @@ private final class RunningCommand: @unchecked Sendable {
         }
         process.standardOutput = outputPipe
         process.standardError = outputPipe
+        exited.enter()
+        process.terminationHandler = { [exited] _ in exited.leave() }
     }
 
     /// Runs the process and arms the timeout. Called only while holding the lock.
@@ -96,7 +104,7 @@ private final class RunningCommand: @unchecked Sendable {
         }
 
         let data = outputPipe.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
+        exited.wait()
         return try lock.withLock {
             // A child can close/redirect stdout and outlive its parent. Finish
             // stopping the owned group even when the pipe has already reached EOF.
@@ -142,7 +150,19 @@ private final class RunningCommand: @unchecked Sendable {
             // until it closes, long after the invocation itself is done.
             DispatchQueue.global(qos: .userInitiated).async { [self] in pump(into: continuation) }
         }
-        return CommandSession(send: { [self] line in try write(line) }, lines: lines)
+        return CommandSession(
+            send: { [self] line in try write(line) },
+            lines: lines,
+            exitStatus: { [self] in await waitForExit() }
+        )
+    }
+
+    private func waitForExit() async -> Int32 {
+        await withCheckedContinuation { continuation in
+            exited.notify(queue: .global(qos: .userInitiated)) { [self] in
+                continuation.resume(returning: process.terminationStatus)
+            }
+        }
     }
 
     /// Splits the merged output pipe into lines until it reaches EOF.
@@ -173,7 +193,7 @@ private final class RunningCommand: @unchecked Sendable {
     /// teardown `execute` performs once its output pipe reaches EOF.
     func finish() async throws {
         stopAfterSession()
-        await Task.detached(priority: .userInitiated) { [self] in process.waitUntilExit() }.value
+        _ = await waitForExit()
         let reason: StopReason? = lock.withLock {
             // A child can close/redirect stdout and outlive its parent. Finish
             // stopping the owned group even when the pipe has already reached EOF.
@@ -309,14 +329,17 @@ enum CommandRunner {
         executable: URL,
         arguments: [String],
         environment additions: [String: String] = [:],
+        unsetEnvironment: Set<String> = [],
+        directory: URL? = nil,
         timeout: TimeInterval = 30,
         _ body: @Sendable (CommandSession) async throws -> T
     ) async throws -> T {
         var environment = ProcessInfo.processInfo.environment
+        unsetEnvironment.forEach { environment.removeValue(forKey: $0) }
         additions.forEach { environment[$0.key] = $0.value }
         let command = RunningCommand(
             executable: executable, arguments: arguments, environment: environment,
-            input: nil, interactive: true
+            input: nil, directory: directory, interactive: true
         )
         return try await withTaskCancellationHandler {
             try Task.checkCancellation()

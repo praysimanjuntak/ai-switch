@@ -214,8 +214,7 @@ final class RemoteSync: ObservableObject {
         case .antigravity:
             guard let data = try? Data(contentsOf: AntigravityCredentialStore.credentialURL(profileDirectory: directory)),
                   let token = AntigravityCredentialStore.parse(data) else { return nil }
-            let projectID = AntigravityCredentialStore.readProjectID(profileDirectory: directory)
-            return PushedAccount.Token(accessToken: token.accessToken, accountId: projectID, expiresAt: token.expiresAt)
+            return PushedAccount.Token(accessToken: token.accessToken, accountId: nil, expiresAt: token.expiresAt)
         }
     }
 

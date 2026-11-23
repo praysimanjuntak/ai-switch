@@ -25,7 +25,7 @@ export interface UsageSnapshot {
 /** Access token only. Refresh tokens never leave the Mac. */
 export interface PushedToken {
   accessToken: string;
-  accountId: string | null; // Codex: ChatGPT-Account-Id header; Antigravity: cloudaicompanionProject
+  accountId: string | null; // Codex: ChatGPT-Account-Id header
   expiresAt: string | null; // ISO 8601; null when unknown
 }
 

@@ -7,12 +7,56 @@ struct LiveAntigravityCredential: Sendable {
     var read: @Sendable () async throws -> Data?
     var write: @Sendable (Data) async throws -> Void
     var delete: @Sendable () async -> Void
+    /// Shared by every copy, so everyone using this live sign-in takes turns.
+    let gate = AntigravityKeychainGate()
 
     static let system = LiveAntigravityCredential(
         read: { try await AntigravityCredentialStore.readLive() },
         write: { try await AntigravityCredentialStore.writeLive($0) },
         delete: { await AntigravityCredentialStore.deleteLive() }
     )
+
+    /// Runs `body` while nothing else reads or replaces the live sign-in. `agy`
+    /// has only one, so renewing another account makes that account's sign-in
+    /// live for a moment; a switch or check that saw it then would save it into
+    /// the wrong account, or be undone when the renewal puts the prior sign-in
+    /// back. The turn ends however `body` does.
+    func withExclusiveAccess<T>(
+        isolation: isolated (any Actor)? = #isolation,
+        _ body: () async throws -> T
+    ) async rethrows -> T {
+        await gate.acquire()
+        do {
+            let value = try await body()
+            await gate.release()
+            return value
+        } catch {
+            await gate.release()
+            throw error
+        }
+    }
+}
+
+/// Hands out turns at Antigravity's live sign-in in arrival order.
+actor AntigravityKeychainGate {
+    private var busy = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    fileprivate func acquire() async {
+        guard busy else {
+            busy = true
+            return
+        }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+
+    fileprivate func release() {
+        if waiters.isEmpty {
+            busy = false
+        } else {
+            waiters.removeFirst().resume()
+        }
+    }
 }
 
 /// Parsed Antigravity CLI (`agy`) OAuth token fields, normalized across
@@ -137,8 +181,9 @@ enum AntigravityCredentialStore {
 
     // MARK: Token parsing, merging, and equivalence
 
-    /// Extracts OAuth fields from Antigravity's JSON payload (flat Go `oauth2.Token`
-    /// or wrapped under `oauth_token` / `token`).
+    /// Extracts OAuth fields from Antigravity's JSON payload: `agy`'s own
+    /// `{"token": {…}, "id_token_email": …}`, or a flat Go `oauth2.Token`, or one
+    /// wrapped under `oauth_token`.
     static func parse(_ data: Data) -> AntigravityOAuthToken? {
         let raw = unwrapKeyringPayload(data)
         guard let root = try? JSONSerialization.jsonObject(with: raw) as? [String: Any] else { return nil }
@@ -162,7 +207,8 @@ enum AntigravityCredentialStore {
             ?? nonEmpty(nested?["idToken"])
 
         let jwtEmail = idToken.flatMap { CredentialIdentity.jwtClaims($0)?["email"] as? String }
-        let email = nonEmpty(root["email"])
+        let email = nonEmpty(root["id_token_email"])
+            ?? nonEmpty(root["email"])
             ?? nonEmpty(root["user_email"])
             ?? nonEmpty(root["userEmail"])
             ?? nonEmpty(nested?["email"])
@@ -196,8 +242,9 @@ enum AntigravityCredentialStore {
     }
 
     /// Merges a refreshed credential into an existing one for the same account so
-    /// fields omitted by a token refresh (`refresh_token`, `id_token`, `email`,
-    /// `project_id`) are never lost.
+    /// fields a token refresh omits (`refresh_token`, `id_token`, the account's
+    /// email, `project_id`) are never lost, whether they sit at the top level or
+    /// inside `agy`'s `token` object (or an `oauth_token` one).
     static func merge(newer: Data, into existing: Data?) -> Data {
         let normalized = unwrapKeyringPayload(newer)
         guard let existing,
@@ -205,22 +252,26 @@ enum AntigravityCredentialStore {
               let prior = try? JSONSerialization.jsonObject(with: unwrapKeyringPayload(existing)) as? [String: Any] else {
             return normalized
         }
-        var changed = false
-        for key in ["refresh_token", "id_token", "email", "user_email", "project_id", "token_type"] {
-            if nonEmpty(updated[key]) == nil, let preserved = nonEmpty(prior[key]) {
+        func keep(_ keys: [String], from prior: [String: Any], in updated: inout [String: Any]) -> Bool {
+            var kept = false
+            for key in keys where nonEmpty(updated[key]) == nil {
+                guard let preserved = nonEmpty(prior[key]) else { continue }
                 updated[key] = preserved
+                kept = true
+            }
+            return kept
+        }
+        var changed = keep(
+            ["refresh_token", "id_token", "id_token_email", "email", "user_email", "project_id", "token_type", "auth_method"],
+            from: prior, in: &updated
+        )
+        for wrapper in ["token", "oauth_token"] {
+            guard var nested = updated[wrapper] as? [String: Any],
+                  let priorNested = prior[wrapper] as? [String: Any] else { continue }
+            if keep(["refresh_token", "id_token", "token_type"], from: priorNested, in: &nested) {
+                updated[wrapper] = nested
                 changed = true
             }
-        }
-        if var updatedNested = updated["oauth_token"] as? [String: Any],
-           let priorNested = prior["oauth_token"] as? [String: Any] {
-            for key in ["refresh_token", "id_token", "token_type"] {
-                if nonEmpty(updatedNested[key]) == nil, let preserved = nonEmpty(priorNested[key]) {
-                    updatedNested[key] = preserved
-                    changed = true
-                }
-            }
-            if changed { updated["oauth_token"] = updatedNested }
         }
         guard changed,
               let merged = try? JSONSerialization.data(withJSONObject: updated, options: [.sortedKeys, .withoutEscapingSlashes]) else {
@@ -257,6 +308,16 @@ enum AntigravityCredentialStore {
     /// so two credentials sharing one are the same sign-in.
     static func refreshToken(from data: Data) -> String? {
         parse(data)?.refreshToken
+    }
+
+    /// Whether two credentials sign in to the same Google account: by the email
+    /// they name, or else by their refresh token, which Google keeps across
+    /// access-token refreshes.
+    static func isSameAccount(_ credential: Data, as other: Data) -> Bool {
+        guard let lhs = parse(credential), let rhs = parse(other) else { return false }
+        if let a = lhs.email, let b = rhs.email { return a.caseInsensitiveCompare(b) == .orderedSame }
+        if let a = lhs.refreshToken, let b = rhs.refreshToken { return a == b }
+        return false
     }
 
     static func readProjectID(profileDirectory: URL) -> String? {

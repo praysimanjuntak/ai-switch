@@ -34,7 +34,7 @@ func lateLoginDoesNotAddAccount() async throws {
     let fixture = try RefreshFixture(active: true)
     defer { try? fixture.remove() }
     let gate = LoginGate()
-    let store = AccountStore(supportDirectory: fixture.directory, startsAutomatically: false, login: { _, directory in
+    let store = AccountStore(supportDirectory: fixture.directory, startsAutomatically: false, login: { _, directory, _ in
         await gate.pause(in: directory) // Deliberately ignores cancellation.
     }, inspect: { _ in
         Issue.record("A cancelled login must not start inspection")
@@ -62,7 +62,7 @@ func cancelledInspectionDoesNotActivateAccount() async throws {
     defer { try? fixture.remove() }
     let gate = LoginGate()
     let store = AccountStore(supportDirectory: fixture.directory, startsAutomatically: false,
-                             login: { _, _ in }, inspect: { profile in
+                             login: { _, _, _ in }, inspect: { profile in
         await gate.pause(in: URL(fileURLWithPath: profile.profileDirectory))
         return ProviderInspection(email: "new@example.com", plan: "test", usage: nil)
     })
@@ -85,7 +85,7 @@ func failedLoginCanBeRetried() async throws {
     let fixture = try RefreshFixture(active: true)
     defer { try? fixture.remove() }
     let store = AccountStore(supportDirectory: fixture.directory, startsAutomatically: false,
-                             login: { _, _ in throw AISwitchError.commandFailed("Test sign-in failure") },
+                             login: { _, _, _ in throw AISwitchError.commandFailed("Test sign-in failure") },
                              inspect: { _ in ProviderInspection() })
     let profilesBefore = store.profiles
     let activeBefore = store.activeProfileIDs
@@ -113,7 +113,7 @@ func activationFailureDoesNotPersistGhostAccount() async throws {
     // No auth file is produced, so activation stops before any live credential
     // writes. The existing fixture is Claude; no live Codex sync is attempted.
     let store = AccountStore(supportDirectory: fixture.directory, startsAutomatically: false,
-                             login: { _, _ in }, inspect: { _ in ProviderInspection() })
+                             login: { _, _, _ in }, inspect: { _ in ProviderInspection() })
     let profilesBefore = store.profiles
     let activeBefore = store.activeProfileIDs
     do {

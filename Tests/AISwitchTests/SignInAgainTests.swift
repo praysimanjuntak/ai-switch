@@ -10,8 +10,8 @@ private func write(_ credential: String, signedInBy provider: AIProvider, in dir
 }
 
 /// A browser sign-in that signs in as `credential`.
-private func signsIn(as credential: String) -> @Sendable (AIProvider, URL) async throws -> Void {
-    { provider, directory in try write(credential, signedInBy: provider, in: directory) }
+private func signsIn(as credential: String) -> @Sendable (AIProvider, URL, SignInCodePrompt?) async throws -> Void {
+    { provider, directory, _ in try write(credential, signedInBy: provider, in: directory) }
 }
 
 /// Sign-in folders left behind, each holding a copy of a sign-in.
@@ -135,7 +135,7 @@ func cancelledSignInAgainChangesNothing() async throws {
     defer { try? fixture.remove() }
     try writeCredential("mine-old", of: fixture.profile)
     let gate = LoginGate()
-    let store = AccountStore(supportDirectory: fixture.directory, startsAutomatically: false, login: { provider, directory in
+    let store = AccountStore(supportDirectory: fixture.directory, startsAutomatically: false, login: { provider, directory, _ in
         await gate.pause(in: directory) // Deliberately ignores cancellation, like a late browser callback.
         try write("mine-new", signedInBy: provider, in: directory)
     }, inspect: { _ in ProviderInspection() }, identify: identities(["mine-old": "me", "mine-new": "me"]),
@@ -159,7 +159,7 @@ func checksWaitForSignInAgain() async throws {
     try writeCredential("mine-old", of: fixture.profile)
     let gate = LoginGate()
     let calls = CallCounter()
-    let store = AccountStore(supportDirectory: fixture.directory, startsAutomatically: false, login: { provider, directory in
+    let store = AccountStore(supportDirectory: fixture.directory, startsAutomatically: false, login: { provider, directory, _ in
         await gate.pause(in: directory)
         try write("mine-new", signedInBy: provider, in: directory)
     }, inspect: { _ in

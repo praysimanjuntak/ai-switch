@@ -41,15 +41,6 @@ function harness(): Harness {
           },
         ],
       }),
-    "https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist": () =>
-      Response.json({ cloudaicompanionProject: "proj-123", paidTier: { id: "g1-pro-tier" } }),
-    "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota": () =>
-      Response.json({
-        buckets: [
-          { modelId: "gemini-2.5-pro", remainingFraction: 0.65, resetTime: "2026-09-16T04:00:00Z" },
-          { modelId: "gemini-2.5-flash", remainingFraction: 0.9, resetTime: "2026-09-16T04:00:00Z" },
-        ],
-      }),
   };
   const fetchImpl = (async (input: string | URL | Request) => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
@@ -207,7 +198,7 @@ describe("sync server", () => {
     expect((await view(h, token)).accounts).toHaveLength(1);
   });
 
-  test("a viewer sees live Antigravity usage from retrieveUserQuotaSummary and falls back to retrieveUserQuota when empty", async () => {
+  test("a viewer sees live Antigravity usage from retrieveUserQuotaSummary, and a note when it has nothing for the account", async () => {
     expect((await h.handle(push([antigravity]))).status).toBe(204);
     const token = await pair(h);
     const first = await view(h, token);
@@ -219,28 +210,15 @@ describe("sync server", () => {
     expect(JSON.stringify(first)).not.toContain("ya29.antigravity-access");
     expect(h.calls).toEqual(["https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary"]);
 
-    // When summary returns 404, server discovers project via loadCodeAssist and calls retrieveUserQuota.
+    // An account the summary doesn't know gets a note, never other quotas shown as its 5-hour and weekly limits.
     h.calls.length = 0;
     h.responses["https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary"] = () => new Response("", { status: 404 });
     h.clock.now = new Date(h.clock.now.getTime() + 61_000);
-    const fallback = await view(h, token);
-    expect(fallback.accounts[0].usage?.session?.usedPercent).toBe(35);
-    expect(fallback.accounts[0].usage?.weekly?.usedPercent).toBe(10);
-    expect(h.calls).toEqual([
-      "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary",
-      "https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist",
-      "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota",
-    ]);
-
-    // When the Mac already pushed the discovered project ID, loadCodeAssist is skipped on fallback.
-    h.calls.length = 0;
-    h.clock.now = new Date(h.clock.now.getTime() + 61_000);
-    expect((await h.handle(push([{ ...antigravity, token: { ...antigravity.token, accountId: "proj-cached" } }]))).status).toBe(204);
-    await view(h, token);
-    expect(h.calls).toEqual([
-      "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary",
-      "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota",
-    ]);
+    const unknown = await view(h, token);
+    expect(unknown.accounts[0].usage?.session).toBeNull();
+    expect(unknown.accounts[0].usage?.weekly).toBeNull();
+    expect(unknown.accounts[0].usage?.note).toContain("did not report");
+    expect(h.calls).toEqual(["https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary"]);
   });
 
   test("accepts a push whose optional fields are omitted, as the Mac encoder does", async () => {

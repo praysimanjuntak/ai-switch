@@ -46,7 +46,7 @@ final class AccountStore: ObservableObject {
     private let backupsRoot: URL
     private var refreshTask: Task<Void, Never>?
     private var codexFeedTask: Task<Void, Never>?
-    private let loginProfile: @Sendable (AIProvider, URL) async throws -> Void
+    private let loginProfile: @Sendable (AIProvider, URL, SignInCodePrompt?) async throws -> Void
     private let inspectProfile: @Sendable (AccountProfile) async throws -> ProviderInspection
     private let renewProfile: @Sendable (AIProvider, URL) async throws -> Void
     private let identify: @Sendable (AIProvider, Data) async -> AccountIdentity?
@@ -81,8 +81,8 @@ final class AccountStore: ObservableObject {
     init(
         supportDirectory: URL? = nil,
         startsAutomatically: Bool = true,
-        login: @escaping @Sendable (AIProvider, URL) async throws -> Void = {
-            try await AccountLoginService.authenticate(provider: $0, directory: $1)
+        login: @escaping @Sendable (AIProvider, URL, SignInCodePrompt?) async throws -> Void = {
+            try await AccountLoginService.authenticate(provider: $0, directory: $1, codePrompt: $2)
         },
         inspect: @escaping @Sendable (AccountProfile) async throws -> ProviderInspection = {
             try await UsageService.inspect($0)
@@ -173,14 +173,15 @@ final class AccountStore: ObservableObject {
         CommandRunner.locate(provider.cliName) != nil
     }
 
-    func addAccount(provider: AIProvider) async throws {
+    /// `codePrompt` takes the code a browser sign-in shows when the CLI asks for one.
+    func addAccount(provider: AIProvider, codePrompt: SignInCodePrompt? = nil) async throws {
         try Task.checkCancellation()
         let id = UUID()
         let directory = profileURL(for: id, provider: provider)
         try secureCreateDirectory(directory)
 
         do {
-            try await loginProfile(provider, directory)
+            try await loginProfile(provider, directory, codePrompt)
             try Task.checkCancellation()
 
             var profile = newProfile(id: id, provider: provider, directory: directory)
@@ -230,7 +231,7 @@ final class AccountStore: ObservableObject {
                 credential = data
                 try manager.writeOwnerOnly(data, to: ClaudeCredentialStore.credentialURL(configDirectory: directory))
             case .antigravity:
-                guard let data = try await liveAntigravity.read() else {
+                guard let data = try await readLiveCredential(.antigravity) else {
                     throw AISwitchError.notSignedIn(.antigravity)
                 }
                 credential = AntigravityCredentialStore.unwrapKeyringPayload(data)
@@ -305,7 +306,7 @@ final class AccountStore: ObservableObject {
         if profile.provider == .codex {
             try CodexConfigEditor.ensureFileCredentialStore()
             try backupCurrentCodexCredential()
-        } else if profile.provider == .antigravity, let live = try? await liveAntigravity.read() {
+        } else if profile.provider == .antigravity, let live = try? await readLiveCredential(.antigravity) {
             try backupCurrentAntigravityCredential(live)
         }
         // Read after the outgoing credential was kept, in case it is this profile's.
@@ -464,7 +465,7 @@ final class AccountStore: ObservableObject {
     /// own and replaces the saved one only if it is the same account, so the
     /// account keeps its name, settings and history, and a failed, cancelled
     /// or mistaken sign-in changes nothing.
-    func signInAgain(_ id: UUID) async throws {
+    func signInAgain(_ id: UUID, codePrompt: SignInCodePrompt? = nil) async throws {
         try Task.checkCancellation()
         guard let profile = profiles.first(where: { $0.id == id }) else { return }
         guard !refreshingProfileIDs.contains(id), switchingProfileID != id, signingInProfileIDs.insert(id).inserted else {
@@ -474,7 +475,7 @@ final class AccountStore: ObservableObject {
         let staging = profileURL(for: UUID(), provider: profile.provider)
         try secureCreateDirectory(staging)
         do {
-            try await loginProfile(profile.provider, staging)
+            try await loginProfile(profile.provider, staging, codePrompt)
             // A late browser callback must not change an account after the sheet closed.
             try Task.checkCancellation()
             try await adoptSignIn(from: staging, into: id)
@@ -504,7 +505,12 @@ final class AccountStore: ObservableObject {
         }
         try await requireSameAccount(signedIn, as: profile, staging: staging)
         var updatesCLI = isActive(profile)
-        if updatesCLI, case .foreign = await liveCredential(for: profile) { updatesCLI = false }
+        if updatesCLI {
+            switch await liveCredential(for: profile) {
+            case .foreign, .anotherEmail: updatesCLI = false
+            default: break
+            }
+        }
         try Task.checkCancellation()
 
         // From here on every step runs, so the account is never left half signed in.
@@ -528,7 +534,7 @@ final class AccountStore: ObservableObject {
             if provider == .codex {
                 try CodexConfigEditor.ensureFileCredentialStore()
                 try backupCurrentCodexCredential()
-            } else if provider == .antigravity, let live = try? await liveAntigravity.read() {
+            } else if provider == .antigravity, let live = try? await readLiveCredential(.antigravity) {
                 try backupCurrentAntigravityCredential(live)
             }
             try await writeLiveCredential(credential, for: provider)
@@ -580,12 +586,12 @@ final class AccountStore: ObservableObject {
 
     /// A Claude sign-in expires about eight hours after Claude Code last used it,
     /// and an Antigravity access token expires about an hour after it was issued.
-    /// An expired one is renewed the way Renew sign-in does it, with one small
-    /// CLI turn. A failed attempt is reported and not repeated for an hour. For
-    /// Claude, the active account is left to Claude Code while it runs: two
-    /// renewals of one rotating sign-in at once can sign Claude Code out. For
-    /// Antigravity, renewal temporarily swaps `agy`'s single global Keychain item,
-    /// so automatic renewal waits while `agy` is running.
+    /// An expired one is renewed the way Renew sign-in does it: one small Claude
+    /// Code turn, or `agy models` for Antigravity. A failed attempt is reported and
+    /// not repeated for an hour. For Claude, the active account is left to Claude
+    /// Code while it runs: two renewals of one rotating sign-in at once can sign
+    /// Claude Code out. For Antigravity, renewal briefly makes the account `agy`'s
+    /// one live sign-in, so automatic renewal waits while `agy` is running.
     private func renewExpiredSignIn(_ id: UUID) async {
         guard let profile = profiles.first(where: { $0.id == id }),
               profile.provider == .claude || profile.provider == .antigravity else { return }
@@ -912,6 +918,10 @@ final class AccountStore: ObservableObject {
         case newer(Data, identity: AccountIdentity?)
         /// Another account's.
         case foreign(Data, identity: AccountIdentity)
+        /// Another account's by the email it names, though whose exactly can't be
+        /// checked right now: an `agy` sign-in whose token expired, or no network.
+        /// Neither adopted nor kept.
+        case anotherEmail
         /// Changed, but whose it is can't be checked right now: a token that
         /// already expired, or no network.
         case unverified(Data)
@@ -932,7 +942,16 @@ final class AccountStore: ObservableObject {
             // The same Google sign-in: only the access token refreshed.
             return .newer(live, identity: nil)
         }
-        guard let identity = await identify(profile.provider, live) else { return .unverified(live) }
+        guard let identity = await identify(profile.provider, live) else {
+            // An `agy` sign-in names its account's email even once its token expired,
+            // so one naming another email is never this profile's.
+            let current = profiles.first(where: { $0.id == profile.id }) ?? profile
+            if profile.provider == .antigravity, let email = AntigravityCredentialStore.parse(live)?.email,
+               let own = current.identity?.email ?? current.email, email.caseInsensitiveCompare(own) != .orderedSame {
+                return .anotherEmail
+            }
+            return .unverified(live)
+        }
         guard let own = await knownIdentity(of: profile) else {
             // Saved before identities were recorded: it held whatever was live.
             return .newer(live, identity: identity)
@@ -957,12 +976,13 @@ final class AccountStore: ObservableObject {
     /// Brings the active profile up to date with the live credential, which the
     /// CLI may have refreshed since the last check, and returns that credential.
     /// Returns nil and leaves the profile as it was when the CLI is signed out,
-    /// signed in to another account (the profile then stops being active), or
-    /// when whose credential it is can't be checked right now. A renewal adopts
-    /// the latter anyway, since it has to start from the newest token.
+    /// signed in to another account (the profile then stops being active once
+    /// that account can be told), or when whose credential it is can't be checked
+    /// right now. A renewal adopts the latter anyway, since it has to start from
+    /// the newest token; one naming another email it never adopts.
     private func adoptLiveCredential(into profile: AccountProfile, renewing: Bool) async -> Data? {
         switch await liveCredential(for: profile) {
-        case .none:
+        case .none, .anotherEmail:
             return nil
         case .saved(let data):
             // Also repairs a record left naming another account, e.g. by a switch
@@ -991,7 +1011,7 @@ final class AccountStore: ObservableObject {
         switch await liveCredential(for: profile) {
         case .newer(let data, let identity): try? writeCredential(data, into: profile, identity: identity)
         case .unverified(let data): try? writeCredential(data, into: profile, identity: nil)
-        case .none, .saved, .foreign: break
+        case .none, .saved, .foreign, .anotherEmail: break
         }
     }
 
@@ -1047,6 +1067,7 @@ final class AccountStore: ObservableObject {
     }
 
     /// The credential new CLI sessions use, or nil when the CLI is signed out.
+    /// Antigravity's waits its turn, so a renewal's momentary swap is never seen.
     private func readLiveCredential(_ provider: AIProvider) async throws -> Data? {
         switch provider {
         case .codex:
@@ -1055,7 +1076,8 @@ final class AccountStore: ObservableObject {
         case .claude:
             return try await liveClaude.read()
         case .antigravity:
-            return try await liveAntigravity.read()
+            let live = liveAntigravity
+            return try await live.withExclusiveAccess { try await live.read() }
         }
     }
 
@@ -1063,7 +1085,9 @@ final class AccountStore: ObservableObject {
         switch provider {
         case .codex: try manager.writeOwnerOnly(credential, to: liveCodexCredential)
         case .claude: try await liveClaude.write(credential)
-        case .antigravity: try await liveAntigravity.write(credential)
+        case .antigravity:
+            let live = liveAntigravity
+            try await live.withExclusiveAccess { try await live.write(credential) }
         }
     }
 

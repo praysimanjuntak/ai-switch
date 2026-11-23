@@ -14,6 +14,9 @@ struct AddAccountSheet: View {
     @State private var localError: String?
     @State private var loginTask: Task<Void, Never>?
     @State private var loginID: UUID?
+    /// Takes the code the browser shows when the CLI asks for one (`agy`).
+    @StateObject private var codePrompt = SignInCodePrompt()
+    @State private var code = ""
 
     init(account: AccountProfile? = nil) {
         self.account = account
@@ -61,6 +64,29 @@ struct AddAccountSheet: View {
             }
             .padding(.vertical, 2)
 
+            if let signInPage = codePrompt.signInPage {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Paste the code from your browser")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(AppPalette.ink)
+                    Text("After you allow access, Google shows an authorization code. Paste it here, or paste the address of that page.")
+                        .font(.system(size: 10))
+                        .foregroundStyle(AppPalette.secondaryInk)
+                        .fixedSize(horizontal: false, vertical: true)
+                    HStack(spacing: 8) {
+                        TextField("Authorization code", text: $code)
+                            .textFieldStyle(.roundedBorder)
+                            .font(.system(size: 11))
+                            .onSubmit(submitCode)
+                        Button("Continue", action: submitCode)
+                            .buttonStyle(AppButtonStyle(prominent: true, compact: true))
+                            .disabled(code.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    }
+                    Link("Open the sign-in page again", destination: signInPage)
+                        .font(.system(size: 10))
+                }
+            }
+
             if let localError {
                 VStack(alignment: .leading, spacing: 6) {
                     Label("Sign-in didn't finish", systemImage: "exclamationmark.circle")
@@ -93,7 +119,8 @@ struct AddAccountSheet: View {
                     Button("Cancel sign-in", action: close)
                         .buttonStyle(AppButtonStyle())
                 }
-                Text(isWorking ? "Finish in your browser, or cancel here at any time."
+                Text(isWorking ? (codePrompt.signInPage == nil ? "Finish in your browser, or cancel here at any time."
+                                  : "Paste the code, or cancel here at any time.")
                      : account == nil ? "Your other accounts stay connected." : "Nothing changes unless you sign in as this account.")
                     .font(.system(size: 10))
                     .foregroundStyle(AppPalette.tertiaryInk)
@@ -154,9 +181,9 @@ struct AddAccountSheet: View {
             }
             do {
                 if let account {
-                    try await store.signInAgain(account.id)
+                    try await store.signInAgain(account.id, codePrompt: codePrompt)
                 } else {
-                    try await store.addAccount(provider: selectedProvider)
+                    try await store.addAccount(provider: selectedProvider, codePrompt: codePrompt)
                 }
                 guard !Task.isCancelled, loginID == attempt else { return }
                 dismiss()
@@ -174,6 +201,13 @@ struct AddAccountSheet: View {
         loginTask?.cancel()
         loginTask = nil
         isWorking = false
+        codePrompt.cancel()
+        code = ""
+    }
+
+    private func submitCode() {
+        codePrompt.submit(code)
+        code = ""
     }
 
     private func close() {

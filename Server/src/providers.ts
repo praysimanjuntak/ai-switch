@@ -116,66 +116,29 @@ export function parseCodexUsage(payload: unknown, now = new Date()): UsageSnapsh
 }
 
 // Antigravity CLI (`agy`) reads its grouped 5h/weekly quotas from Cloud Code Assist
-// using its Google OAuth access token.
+// using its Google OAuth access token. An account the summary has nothing for gets
+// a note rather than guessed limits.
 async function fetchAntigravityUsage(token: PushedToken, now: Date, fetchImpl: typeof fetch): Promise<UsageSnapshot> {
-  const headers: Record<string, string> = {
-    Authorization: `Bearer ${token.accessToken}`,
-    "Content-Type": "application/json",
-    "User-Agent": ANTIGRAVITY_USER_AGENT,
-  };
-  const summaryResponse = await fetchImpl(`${ANTIGRAVITY_ENDPOINT}/v1internal:retrieveUserQuotaSummary`, {
+  const response = await fetchImpl(`${ANTIGRAVITY_ENDPOINT}/v1internal:retrieveUserQuotaSummary`, {
     method: "POST",
-    headers,
+    headers: {
+      Authorization: `Bearer ${token.accessToken}`,
+      "Content-Type": "application/json",
+      "User-Agent": ANTIGRAVITY_USER_AGENT,
+    },
     body: "{}",
     signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
   });
-  if (summaryResponse.status === 401) throw new TokenRejectedError();
-  if (summaryResponse.ok) {
-    const parsed = parseAntigravityQuotaSummary(await summaryResponse.json(), now);
-    if (parsed.session !== null || parsed.weekly !== null || (parsed.scoped?.length ?? 0) > 0) {
-      return parsed;
-    }
-  } else if (summaryResponse.status !== 404) {
-    throw new Error(`Antigravity usage request failed (HTTP ${summaryResponse.status}).`);
-  }
-
-  let projectId = token.accountId;
-  if (!projectId) {
-    try {
-      const init = await fetchImpl(`${ANTIGRAVITY_ENDPOINT}/v1internal:loadCodeAssist`, {
-        method: "POST",
-        headers,
-        body: JSON.stringify({ metadata: { ideType: "ANTIGRAVITY" } }),
-        signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-      });
-      if (init.status === 401) throw new TokenRejectedError();
-      if (init.ok) {
-        const body = asRecord(await init.json());
-        const rawProject = body.cloudaicompanionProject;
-        if (typeof rawProject === "string" && rawProject.length > 0) {
-          projectId = rawProject;
-        } else if (typeof asRecord(rawProject).id === "string" && (asRecord(rawProject).id as string).length > 0) {
-          projectId = asRecord(rawProject).id as string;
-        }
-      }
-    } catch (error) {
-      if (error instanceof TokenRejectedError) throw error;
-    }
-  }
-  const fallbackResponse = await fetchImpl(`${ANTIGRAVITY_ENDPOINT}/v1internal:retrieveUserQuota`, {
-    method: "POST",
-    headers,
-    body: JSON.stringify(projectId ? { project: projectId } : {}),
-    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-  });
-  if (fallbackResponse.status === 401) throw new TokenRejectedError();
-  if (!fallbackResponse.ok) throw new Error(`Antigravity usage request failed (HTTP ${fallbackResponse.status}).`);
-  return parseAntigravityModelBuckets(await fallbackResponse.json(), now);
+  if (response.status === 401) throw new TokenRejectedError();
+  if (response.status === 404) return parseAntigravityQuotaSummary({}, now);
+  if (!response.ok) throw new Error(`Antigravity usage request failed (HTTP ${response.status}).`);
+  return parseAntigravityQuotaSummary(await response.json(), now);
 }
 
 /** Parses Antigravity's `v1internal:retrieveUserQuotaSummary` response:
- *  Gemini 5h/weekly map to `session`/`weekly`, and third-party shared buckets
- *  (`3p-weekly` / `3p-5h`, Claude & GPT) map to `scoped` ("Claude/GPT"). */
+ *  Gemini 5h/weekly map to `session`/`weekly`, and the third-party shared weekly
+ *  bucket (`3p-weekly`, Claude & GPT) maps to `scoped` ("Claude/GPT").
+ *  Claude/GPT never stands in for Gemini's limits. */
 export function parseAntigravityQuotaSummary(payload: unknown, now = new Date()): UsageSnapshot {
   const root = asRecord(payload);
   const groups = Array.isArray(root.groups) ? (root.groups as unknown[]).map(asRecord) : [];
@@ -210,7 +173,6 @@ export function parseAntigravityQuotaSummary(payload: unknown, now = new Date())
   let gemini5h: UsageWindow | null = null;
   let geminiWeekly: UsageWindow | null = null;
   let thirdPartyWeekly: UsageWindow | null = null;
-  let thirdParty5h: UsageWindow | null = null;
 
   for (const group of groups) {
     const groupId = typeof group.id === "string" ? group.id.toLowerCase() : "";
@@ -243,13 +205,8 @@ export function parseAntigravityQuotaSummary(payload: unknown, now = new Date())
         displayName.includes("5 hour");
 
       if (is3P) {
-        if (isWeekly) {
-          thirdPartyWeekly = tighter(thirdPartyWeekly, window);
-        } else if (is5h) {
-          thirdParty5h = tighter(thirdParty5h, window);
-        } else {
-          thirdPartyWeekly = tighter(thirdPartyWeekly, window);
-        }
+        // Shown as "Claude/GPT weekly", so a 5-hour Claude/GPT bucket has no place.
+        if (isWeekly || !is5h) thirdPartyWeekly = tighter(thirdPartyWeekly, window);
       } else {
         if (is5h) {
           gemini5h = tighter(gemini5h, window);
@@ -264,57 +221,16 @@ export function parseAntigravityQuotaSummary(payload: unknown, now = new Date())
     }
   }
 
-  let scoped: ScopedUsageWindow[] = [];
-  const thirdParty = thirdPartyWeekly ?? thirdParty5h;
-  if (thirdParty) scoped.push({ name: "Claude/GPT", window: thirdParty });
-  const session = gemini5h ?? (geminiWeekly === null ? thirdParty5h : null);
-  const weekly = geminiWeekly ?? (gemini5h === null ? thirdPartyWeekly : null);
-  if (gemini5h === null && geminiWeekly === null) scoped = [];
+  const scoped: ScopedUsageWindow[] = thirdPartyWeekly ? [{ name: "Claude/GPT", window: thirdPartyWeekly }] : [];
   return {
-    session,
-    weekly,
+    session: gemini5h,
+    weekly: geminiWeekly,
     scoped,
     fetchedAt: now.toISOString(),
-    note: session === null && weekly === null && scoped.length === 0 ? "Antigravity did not report quota limits for this account." : null,
-  };
-}
-
-/** Fallback parser for `v1internal:retrieveUserQuota` per-model buckets. */
-export function parseAntigravityModelBuckets(payload: unknown, now = new Date()): UsageSnapshot {
-  const root = asRecord(payload);
-  const allBuckets = Array.isArray(root.buckets) ? (root.buckets as unknown[]).map(asRecord) : [];
-  const nonVertex = allBuckets.filter((bucket) => !(typeof bucket.modelId === "string" && bucket.modelId.toLowerCase().endsWith("_vertex")));
-  const buckets = nonVertex.length > 0 ? nonVertex : allBuckets;
-
-  const tighter = (current: UsageWindow | null, candidate: UsageWindow): UsageWindow =>
-    !current || candidate.usedPercent > current.usedPercent ? candidate : current;
-
-  let pro: UsageWindow | null = null;
-  let flash: UsageWindow | null = null;
-  for (const bucket of buckets) {
-    if (typeof bucket.modelId !== "string" || bucket.modelId.length === 0) continue;
-    const rawFraction = asNumber(bucket.remainingFraction);
-    let remaining: number;
-    if (rawFraction !== null) {
-      remaining = Math.max(0, Math.min(1, rawFraction));
-    } else if (bucket.remainingAmount === "0" || bucket.remainingAmount === 0) {
-      remaining = 0;
-    } else {
-      continue;
-    }
-    const window: UsageWindow = { usedPercent: Math.round((1 - remaining) * 10_000) / 100, resetsAt: asISODate(bucket.resetTime) };
-    if (bucket.modelId.toLowerCase().includes("flash")) {
-      flash = tighter(flash, window);
-    } else {
-      pro = tighter(pro, window);
-    }
-  }
-  return {
-    session: pro,
-    weekly: flash,
-    scoped: [],
-    fetchedAt: now.toISOString(),
-    note: pro === null && flash === null ? "Antigravity did not report quota limits for this account." : null,
+    note:
+      gemini5h === null && geminiWeekly === null && scoped.length === 0
+        ? "Antigravity did not report quota limits for this account."
+        : null,
   };
 }
 

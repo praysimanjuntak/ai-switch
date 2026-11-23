@@ -297,13 +297,11 @@ enum UsageService {
         var email = AntigravityCredentialStore.parse(credential)?.email
         let token = try AntigravityCredentialStore.accessToken(from: credential)
 
-        var projectID = AntigravityCredentialStore.readProjectID(profileDirectory: dir)
         var plan: String?
         do {
             let codeAssist = try await loadAntigravityCodeAssist(accessToken: token)
-            if let discovered = codeAssist.projectID {
-                projectID = discovered
-                AntigravityCredentialStore.saveProjectID(discovered, profileDirectory: dir)
+            if let projectID = codeAssist.projectID {
+                AntigravityCredentialStore.saveProjectID(projectID, profileDirectory: dir)
             }
             plan = codeAssist.plan
         } catch AISwitchError.antigravitySessionExpired {
@@ -311,10 +309,10 @@ enum UsageService {
         } catch AISwitchError.usageRateLimited(let provider) {
             throw AISwitchError.usageRateLimited(provider)
         } catch {
-            // Best-effort: quota lookup can still succeed without loadCodeAssist metadata.
+            // Best-effort: the plan is optional, and quota comes from its own request.
         }
 
-        let usage = try await fetchAntigravityUsage(accessToken: token, projectID: projectID)
+        let usage = try await fetchAntigravityUsage(accessToken: token)
         if email == nil {
             email = (try? await fetchGoogleIdentity(accessToken: token))?.email
         }
@@ -322,8 +320,23 @@ enum UsageService {
     }
 
     static func loadAntigravityCodeAssist(accessToken: String) async throws -> (projectID: String?, plan: String?) {
-        guard let url = URL(string: "\(antigravityEndpoint)/v1internal:loadCodeAssist") else {
-            throw AISwitchError.invalidResponse("Antigravity Code Assist URL is invalid.")
+        let (data, status) = try await postToCloudCode(
+            "loadCodeAssist", accessToken: accessToken, body: #"{"metadata":{"ideType":"ANTIGRAVITY"}}"#
+        )
+        guard (200..<300).contains(status) else {
+            throw AISwitchError.invalidResponse("Antigravity account check failed (HTTP \(status)).")
+        }
+        guard let payload = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw AISwitchError.invalidResponse("Antigravity returned an unreadable account response.")
+        }
+        return parseAntigravityCodeAssist(payload)
+    }
+
+    /// POSTs `body` to a Cloud Code Assist method with the account's token, as
+    /// Antigravity does. A rejected token and rate limiting become their errors.
+    private static func postToCloudCode(_ method: String, accessToken: String, body: String) async throws -> (Data, Int) {
+        guard let url = URL(string: "\(antigravityEndpoint)/v1internal:\(method)") else {
+            throw AISwitchError.invalidResponse("Antigravity's \(method) URL is invalid.")
         }
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
@@ -331,22 +344,14 @@ enum UsageService {
         request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue(antigravityUserAgent, forHTTPHeaderField: "User-Agent")
-        request.httpBody = Data(#"{"metadata":{"ideType":"ANTIGRAVITY"}}"#.utf8)
-
+        request.httpBody = Data(body.utf8)
         let (data, response) = try await URLSession.shared.data(for: request)
-        switch (response as? HTTPURLResponse)?.statusCode {
+        let status = (response as? HTTPURLResponse)?.statusCode ?? -1
+        switch status {
         case 401: throw AISwitchError.antigravitySessionExpired
         case 429: throw AISwitchError.usageRateLimited(.antigravity)
-        default: break
+        default: return (data, status)
         }
-        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
-            let code = (response as? HTTPURLResponse)?.statusCode ?? -1
-            throw AISwitchError.invalidResponse("Antigravity account check failed (HTTP \(code)).")
-        }
-        guard let payload = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            throw AISwitchError.invalidResponse("Antigravity returned an unreadable account response.")
-        }
-        return parseAntigravityCodeAssist(payload)
     }
 
     static func parseAntigravityCodeAssist(_ payload: [String: Any]) -> (projectID: String?, plan: String?) {
@@ -386,61 +391,21 @@ enum UsageService {
         return nil
     }
 
-    static func fetchAntigravityUsage(accessToken: String, projectID: String?, now: Date = Date()) async throws -> UsageSnapshot {
-        guard let summaryURL = URL(string: "\(antigravityEndpoint)/v1internal:retrieveUserQuotaSummary") else {
-            throw AISwitchError.invalidResponse("Antigravity quota URL is invalid.")
-        }
-        var request = URLRequest(url: summaryURL)
-        request.httpMethod = "POST"
-        request.timeoutInterval = 20
-        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue(antigravityUserAgent, forHTTPHeaderField: "User-Agent")
-        request.httpBody = Data("{}".utf8)
-
-        let (data, response) = try await URLSession.shared.data(for: request)
-        let status = (response as? HTTPURLResponse)?.statusCode ?? -1
+    /// Antigravity's 5-hour, weekly, and Claude/GPT limits. An account the
+    /// summary has nothing for gets a note rather than guessed limits.
+    static func fetchAntigravityUsage(accessToken: String, now: Date = Date()) async throws -> UsageSnapshot {
+        let (data, status) = try await postToCloudCode("retrieveUserQuotaSummary", accessToken: accessToken, body: "{}")
         switch status {
-        case 401: throw AISwitchError.antigravitySessionExpired
-        case 429: throw AISwitchError.usageRateLimited(.antigravity)
         case 200..<300:
-            if let payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-                let parsed = parseAntigravityQuotaSummary(payload, now: now)
-                if parsed.session != nil || parsed.weekly != nil || !parsed.scoped.isEmpty {
-                    return parsed
-                }
+            guard let payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                throw AISwitchError.invalidResponse("Antigravity returned an unreadable usage response.")
             }
+            return parseAntigravityQuotaSummary(payload, now: now)
         case 404:
-            break
+            return parseAntigravityQuotaSummary([:], now: now)
         default:
-            throw AISwitchError.invalidResponse("Antigravity usage refresh failed (HTTP \(status)). Re-authenticate this profile if its login expired.")
+            throw AISwitchError.invalidResponse("Antigravity usage refresh failed (HTTP \(status)).")
         }
-
-        // Fall back to `retrieveUserQuota` if `retrieveUserQuotaSummary` returned no groups.
-        guard let fallbackURL = URL(string: "\(antigravityEndpoint)/v1internal:retrieveUserQuota") else {
-            throw AISwitchError.invalidResponse("Antigravity quota URL is invalid.")
-        }
-        var fallback = URLRequest(url: fallbackURL)
-        fallback.httpMethod = "POST"
-        fallback.timeoutInterval = 20
-        fallback.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
-        fallback.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        fallback.setValue(antigravityUserAgent, forHTTPHeaderField: "User-Agent")
-        let body: [String: Any] = projectID.map { ["project": $0] } ?? [:]
-        fallback.httpBody = try JSONSerialization.data(withJSONObject: body)
-
-        let (fallbackData, fallbackResponse) = try await URLSession.shared.data(for: fallback)
-        let fallbackStatus = (fallbackResponse as? HTTPURLResponse)?.statusCode ?? -1
-        switch fallbackStatus {
-        case 401: throw AISwitchError.antigravitySessionExpired
-        case 429: throw AISwitchError.usageRateLimited(.antigravity)
-        default: break
-        }
-        guard (200..<300).contains(fallbackStatus),
-              let fallbackPayload = try JSONSerialization.jsonObject(with: fallbackData) as? [String: Any] else {
-            throw AISwitchError.invalidResponse("Antigravity usage refresh failed (HTTP \(fallbackStatus)).")
-        }
-        return parseAntigravityModelBuckets(fallbackPayload, now: now)
     }
 
     /// The Google account an OAuth access token belongs to, used when `id_token`
@@ -465,15 +430,14 @@ enum UsageService {
     }
 
     /// Parses Antigravity's `v1internal:retrieveUserQuotaSummary` response:
-    /// Gemini's 5-hour and weekly buckets map to `session` and `weekly`, and
-    /// third-party shared buckets (`3p-weekly` / `3p-5h`, i.e. Claude & GPT)
-    /// map to `scoped` ("Claude/GPT").
+    /// Gemini's 5-hour and weekly buckets map to `session` and `weekly`, and the
+    /// third-party shared weekly bucket (`3p-weekly`, i.e. Claude & GPT) maps to
+    /// `scoped` ("Claude/GPT"). Claude/GPT never stands in for Gemini's limits.
     static func parseAntigravityQuotaSummary(_ payload: [String: Any], now: Date = Date()) -> UsageSnapshot {
         let groups = (payload["groups"] as? [[String: Any]]) ?? []
         var gemini5h: UsageWindow?
         var geminiWeekly: UsageWindow?
         var thirdPartyWeekly: UsageWindow?
-        var thirdParty5h: UsageWindow?
 
         func tighter(_ current: UsageWindow?, _ candidate: UsageWindow) -> UsageWindow {
             guard let current else { return candidate }
@@ -515,11 +479,8 @@ enum UsageService {
                     || displayName.contains("five hour") || displayName.contains("5-hour") || displayName.contains("5 hour")
 
                 if is3P {
-                    if isWeekly {
-                        thirdPartyWeekly = tighter(thirdPartyWeekly, window)
-                    } else if is5h {
-                        thirdParty5h = tighter(thirdParty5h, window)
-                    } else {
+                    // Shown as "Claude/GPT weekly", so a 5-hour Claude/GPT bucket has no place.
+                    if isWeekly || !is5h {
                         thirdPartyWeekly = tighter(thirdPartyWeekly, window)
                     }
                 } else {
@@ -536,56 +497,10 @@ enum UsageService {
             }
         }
 
-        var scoped: [ScopedUsageWindow] = []
-        if let thirdParty = thirdPartyWeekly ?? thirdParty5h {
-            scoped.append(ScopedUsageWindow(name: "Claude/GPT", window: thirdParty))
-        }
-        // If only 3p buckets were returned (no Gemini group), surface them directly.
-        let session = gemini5h ?? (geminiWeekly == nil ? thirdParty5h : nil)
-        let weekly = geminiWeekly ?? (gemini5h == nil ? thirdPartyWeekly : nil)
-        if gemini5h == nil && geminiWeekly == nil {
-            scoped = []
-        }
-        let note: String? = (session == nil && weekly == nil && scoped.isEmpty)
+        let scoped = thirdPartyWeekly.map { [ScopedUsageWindow(name: "Claude/GPT", window: $0)] } ?? []
+        let note: String? = (gemini5h == nil && geminiWeekly == nil && scoped.isEmpty)
             ? "Antigravity did not report quota limits for this account." : nil
-        return UsageSnapshot(session: session, weekly: weekly, scoped: scoped, fetchedAt: now, note: note)
-    }
-
-    /// Fallback parser for `v1internal:retrieveUserQuota` per-model buckets when
-    /// `retrieveUserQuotaSummary` returns no groups.
-    static func parseAntigravityModelBuckets(_ payload: [String: Any], now: Date = Date()) -> UsageSnapshot {
-        let allBuckets = (payload["buckets"] as? [[String: Any]]) ?? []
-        let nonVertex = allBuckets.filter { !(($0["modelId"] as? String)?.lowercased().hasSuffix("_vertex") ?? false) }
-        let buckets = nonVertex.isEmpty ? allBuckets : nonVertex
-
-        func tighter(_ current: UsageWindow?, _ candidate: UsageWindow) -> UsageWindow {
-            guard let current else { return candidate }
-            return candidate.usedPercent > current.usedPercent ? candidate : current
-        }
-
-        var pro: UsageWindow?
-        var flash: UsageWindow?
-        for bucket in buckets {
-            guard let model = (bucket["modelId"] as? String)?.lowercased(), !model.isEmpty else { continue }
-            let remaining: Double
-            if let fraction = number(bucket["remainingFraction"]) {
-                remaining = max(0, min(1, fraction))
-            } else if (bucket["remainingAmount"] as? String) == "0" || number(bucket["remainingAmount"]) == 0 {
-                remaining = 0
-            } else {
-                continue
-            }
-            let window = UsageWindow(usedPercent: ((1 - remaining) * 10_000).rounded() / 100,
-                                     resetsAt: parseISO8601(bucket["resetTime"] as? String))
-            if model.contains("flash") {
-                flash = tighter(flash, window)
-            } else {
-                pro = tighter(pro, window)
-            }
-        }
-        let note: String? = (pro == nil && flash == nil)
-            ? "Antigravity did not report quota limits for this account." : nil
-        return UsageSnapshot(session: pro, weekly: flash, fetchedAt: now, note: note)
+        return UsageSnapshot(session: gemini5h, weekly: geminiWeekly, scoped: scoped, fetchedAt: now, note: note)
     }
 
     private static func parseISO8601(_ value: String?) -> Date? {
